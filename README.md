@@ -274,11 +274,6 @@ cargo build --release -p runtime
 4. **Harness Over Orchestration** — Agent quality comes from workspace structure, not complex scheduling
 5. **Observable Operations** — Status, logs, health, event streams are first-class
 
-## Documentation
-
-- [DESIGN_JA.md](./DESIGN_JA.md) — Design philosophy and decisions (Japanese)
-- [USAGE_JA.md](./USAGE_JA.md) — Operational guide (Japanese)
-
 ## License
 
 MIT
