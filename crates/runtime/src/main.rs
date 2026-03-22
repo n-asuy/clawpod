@@ -227,6 +227,7 @@ async fn main() -> Result<()> {
                 account_id,
                 pre_routed_agent: agent,
                 files: vec![],
+                chain_depth: 0,
             };
             let path = enqueue_message(&config, msg).await?;
             info!(path = %path.display(), "queued message");

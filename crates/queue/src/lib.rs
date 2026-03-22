@@ -40,6 +40,8 @@ pub struct EnqueueMessage {
     pub account_id: Option<String>,
     pub pre_routed_agent: Option<String>,
     pub files: Vec<String>,
+    #[serde(default)]
+    pub chain_depth: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +69,8 @@ struct IncomingQueueEnvelope {
     available_at_ms: Option<i64>,
     #[serde(default)]
     last_error: Option<String>,
+    #[serde(default)]
+    chain_depth: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -392,6 +396,9 @@ impl QueueProcessor {
             Ok(text) => {
                 // Extract teammate mentions and enqueue as separate messages (flat handoff)
                 if let Some(ref tid) = team_id {
+                    let next_depth = event.chain_depth + 1;
+                    let max_depth = self.config.chain.max_chain_steps as u32;
+
                     let handoffs = routing::extract_teammate_mentions(
                         &text,
                         &agent_id,
@@ -399,10 +406,25 @@ impl QueueProcessor {
                         &self.config.teams,
                         &self.config.agents,
                     );
+
+                    if !handoffs.is_empty() && next_depth > max_depth {
+                        warn!(
+                            depth = next_depth,
+                            max = max_depth,
+                            agent = %agent_id,
+                            "handoff chain depth exceeded — dropping further handoffs"
+                        );
+                    }
+
                     for mention in &handoffs {
+                        if next_depth > max_depth {
+                            break;
+                        }
+
                         info!(
                             from = %agent_id,
                             to = %mention.teammate_id,
+                            depth = next_depth,
                             "handoff enqueued"
                         );
                         self.emit_event(
@@ -411,6 +433,7 @@ impl QueueProcessor {
                                 "team_id": tid,
                                 "from_agent": agent_id,
                                 "to_agent": mention.teammate_id,
+                                "chain_depth": next_depth,
                             }),
                         )
                         .await?;
@@ -437,6 +460,7 @@ impl QueueProcessor {
                                 account_id: event.account_id.clone(),
                                 pre_routed_agent: Some(mention.teammate_id.clone()),
                                 files: vec![],
+                                chain_depth: next_depth,
                             },
                         )
                         .await?;
@@ -688,6 +712,7 @@ impl QueueProcessor {
             account_id: envelope.account_id.clone(),
             files: envelope.files.clone(),
             pre_routed_agent: envelope.agent.clone(),
+            chain_depth: envelope.chain_depth,
         })
     }
 
@@ -880,6 +905,7 @@ pub async fn enqueue_message(config: &RuntimeConfig, msg: EnqueueMessage) -> Res
         "retry_count": 0,
         "available_at_ms": available_at_ms,
         "last_error": null,
+        "chain_depth": msg.chain_depth,
     });
 
     let file_name = queued_file_name(available_at_ms);
@@ -1101,4 +1127,76 @@ fn apply_custom_provider_metadata(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn envelope_roundtrip_preserves_chain_depth() {
+        let payload = json!({
+            "channel": "slack",
+            "sender": "alice",
+            "sender_id": "U123",
+            "message": "[Message from teammate @default]:\nhi",
+            "timestamp": 1711100000000_i64,
+            "message_id": "internal-abc-tester",
+            "agent": "tester",
+            "chain_depth": 3,
+        });
+        let envelope: IncomingQueueEnvelope =
+            serde_json::from_value(payload).expect("deserialize");
+        assert_eq!(envelope.chain_depth, 3);
+        assert_eq!(envelope.agent.as_deref(), Some("tester"));
+    }
+
+    #[test]
+    fn envelope_defaults_chain_depth_to_zero() {
+        let payload = json!({
+            "channel": "slack",
+            "sender": "alice",
+            "message": "hello",
+            "timestamp": 1711100000000_i64,
+            "message_id": "msg-1",
+        });
+        let envelope: IncomingQueueEnvelope =
+            serde_json::from_value(payload).expect("deserialize");
+        assert_eq!(envelope.chain_depth, 0);
+    }
+
+    #[test]
+    fn enqueue_payload_includes_chain_depth() {
+        let msg = EnqueueMessage {
+            channel: "test".to_string(),
+            sender: "bob".to_string(),
+            sender_id: "bob_1".to_string(),
+            message: "hi".to_string(),
+            message_id: "m1".to_string(),
+            timestamp_ms: 1711100000000,
+            chat_type: ChatType::Direct,
+            peer_id: "bob_1".to_string(),
+            account_id: None,
+            pre_routed_agent: Some("tester".to_string()),
+            files: vec![],
+            chain_depth: 5,
+        };
+
+        // Simulate what enqueue_message builds
+        let payload = json!({
+            "channel": msg.channel,
+            "sender": msg.sender,
+            "sender_id": msg.sender_id,
+            "message": msg.message,
+            "timestamp": msg.timestamp_ms,
+            "message_id": msg.message_id,
+            "agent": msg.pre_routed_agent,
+            "chain_depth": msg.chain_depth,
+        });
+
+        let envelope: IncomingQueueEnvelope =
+            serde_json::from_value(payload).expect("roundtrip");
+        assert_eq!(envelope.chain_depth, 5);
+        assert_eq!(envelope.agent.as_deref(), Some("tester"));
+    }
 }

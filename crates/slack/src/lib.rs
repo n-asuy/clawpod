@@ -673,6 +673,7 @@ async fn handle_message_event(
             account_id: None,
             pre_routed_agent: None,
             files,
+            chain_depth: 0,
         },
     )
     .await?;

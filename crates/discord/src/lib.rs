@@ -191,6 +191,7 @@ async fn handle_message(
             account_id: message.guild_id.map(|id| id.to_string()),
             pre_routed_agent: None,
             files,
+            chain_depth: 0,
         },
     )
     .await?;

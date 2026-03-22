@@ -232,6 +232,8 @@ pub struct InboundEvent {
     pub account_id: Option<String>,
     pub files: Vec<String>,
     pub pre_routed_agent: Option<String>,
+    #[serde(default)]
+    pub chain_depth: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
