@@ -123,6 +123,7 @@ pub async fn run(
     let app = Router::new()
         .route("/", get(office))
         .route("/office", get(office))
+        .route("/office/*rest", get(office))
         .route("/health", get(health))
         .route("/api/health", get(api_health))
         .route("/api/settings", get(get_settings).put(update_settings))

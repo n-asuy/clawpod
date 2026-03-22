@@ -709,14 +709,33 @@ tr:hover td { background: var(--bg-hover); }
   let currentPage = 'dashboard';
   let pollTimer = null;
 
-  window.navigate = function(page) {
+  const validPages = new Set([
+    'dashboard','events','agents','teams','settings',
+    'runs','sessions','responses','access','chatroom',
+  ]);
+
+  function pageFromPath() {
+    const seg = location.pathname.replace(/^\/office\/?/, '').split('/')[0];
+    return validPages.has(seg) ? seg : 'dashboard';
+  }
+
+  window.navigate = function(page, pushState = true) {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     currentPage = page;
+    if (pushState) {
+      const url = '/office/' + page;
+      history.pushState({ page }, '', url);
+    }
     $$('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
     $('#page-title').textContent = pageTitle(page);
     $('#header-actions').innerHTML = '';
     renderPage(page);
   };
+
+  window.addEventListener('popstate', (e) => {
+    const page = (e.state && e.state.page) || pageFromPath();
+    navigate(page, false);
+  });
 
   function pageTitle(page) {
     const titles = {
@@ -1429,7 +1448,9 @@ tr:hover td { background: var(--bg-hover); }
 
   /* ── Init ── */
   initTheme();
-  navigate('dashboard');
+  const initialPage = pageFromPath();
+  history.replaceState({ page: initialPage }, '', '/office/' + initialPage);
+  navigate(initialPage, false);
   connectSSE();
 })();
 </script>
