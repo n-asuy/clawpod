@@ -105,6 +105,18 @@ struct PairingApproveRequest {
     code: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SaveFileRequest {
+    content: String,
+}
+
+/// Workspace files that can be edited via the API.
+/// Each entry is (subdirectory relative to agent root, display name).
+const EDITABLE_FILES: &[(&str, &str)] = &[
+    (".clawpod", "SOUL.md"),
+    ("", "AGENTS.md"),
+];
+
 pub async fn run(
     config: RuntimeConfig,
     config_path: PathBuf,
@@ -123,6 +135,7 @@ pub async fn run(
     let app = Router::new()
         .route("/", get(office))
         .route("/office", get(office))
+        .route("/office/*rest", get(office))
         .route("/health", get(health))
         .route("/api/health", get(api_health))
         .route("/api/settings", get(get_settings).put(update_settings))
@@ -134,6 +147,14 @@ pub async fn run(
         .route(
             "/api/agents/:agent_id/sessions/clear",
             post(clear_agent_sessions_api),
+        )
+        .route(
+            "/api/agents/:agent_id/files",
+            get(list_agent_files),
+        )
+        .route(
+            "/api/agents/:agent_id/files/:filename",
+            get(get_agent_file).put(put_agent_file),
         )
         .route("/api/teams", get(list_teams).post(create_team))
         .route(
@@ -656,6 +677,102 @@ async fn stream_events(
         Ok::<_, Infallible>(event)
     });
     Ok(Sse::new(stream))
+}
+
+// ---------------------------------------------------------------------------
+// Workspace file API (SOUL.md, AGENTS.md, etc.)
+// ---------------------------------------------------------------------------
+
+async fn list_agent_files(
+    State(state): State<AppState>,
+    AxumPath(agent_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let config = state.config.read().await;
+    if !config.agents.contains_key(&agent_id) {
+        return Err((StatusCode::NOT_FOUND, format!("agent not found: {agent_id}")));
+    }
+    let agent_root = config.resolve_agent_workdir(&agent_id);
+    let mut files = vec![];
+    for &(subdir, name) in EDITABLE_FILES {
+        let path = if subdir.is_empty() {
+            agent_root.join(name)
+        } else {
+            agent_root.join(subdir).join(name)
+        };
+        let (exists, size) = match tokio::fs::metadata(&path).await {
+            Ok(m) => (true, m.len()),
+            Err(_) => (false, 0),
+        };
+        files.push(json!({
+            "name": name,
+            "exists": exists,
+            "size": size,
+        }));
+    }
+    Ok(Json(json!({ "files": files })))
+}
+
+async fn get_agent_file(
+    State(state): State<AppState>,
+    AxumPath((agent_id, filename)): AxumPath<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    let config = state.config.read().await;
+    if !config.agents.contains_key(&agent_id) {
+        return Err((StatusCode::NOT_FOUND, format!("agent not found: {agent_id}")));
+    }
+    let path = resolve_workspace_file(&config, &agent_id, &filename)?;
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .unwrap_or_default();
+    Ok(Json(json!({ "name": filename, "content": content })))
+}
+
+async fn put_agent_file(
+    State(state): State<AppState>,
+    AxumPath((agent_id, filename)): AxumPath<(String, String)>,
+    Json(payload): Json<SaveFileRequest>,
+) -> ApiResult<Json<Value>> {
+    let config = state.config.read().await;
+    if !config.agents.contains_key(&agent_id) {
+        return Err((StatusCode::NOT_FOUND, format!("agent not found: {agent_id}")));
+    }
+    let path = resolve_workspace_file(&config, &agent_id, &filename)?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| internal_error(e.into()))?;
+    }
+    tokio::fs::write(&path, &payload.content)
+        .await
+        .map_err(|e| internal_error(e.into()))?;
+    emit_server_event(
+        &state,
+        "workspace_file_saved",
+        json!({ "agent_id": agent_id, "file": filename }),
+    );
+    Ok(Json(json!({ "ok": true, "name": filename })))
+}
+
+fn resolve_workspace_file(
+    config: &RuntimeConfig,
+    agent_id: &str,
+    filename: &str,
+) -> Result<PathBuf, (StatusCode, String)> {
+    for &(subdir, name) in EDITABLE_FILES {
+        if name == filename {
+            let agent_root = config.resolve_agent_workdir(agent_id);
+            let path = if subdir.is_empty() {
+                agent_root.join(name)
+            } else {
+                agent_root.join(subdir).join(name)
+            };
+            return Ok(path);
+        }
+    }
+    Err((
+        StatusCode::BAD_REQUEST,
+        format!("file not editable: {filename}"),
+    ))
 }
 
 async fn count_json_files(path: &Path) -> Result<usize> {

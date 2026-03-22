@@ -520,8 +520,24 @@ tr:hover td { background: var(--bg-hover); }
 .theme-toggle:hover { color: var(--text); border-color: var(--text-dim); }
 
 /* Responsive */
+.menu-toggle {
+  display: none;
+  background: none; border: none; color: var(--text); font-size: 22px;
+  cursor: pointer; padding: 4px 8px; margin-right: 8px; line-height: 1;
+}
+.sidebar-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 99;
+}
+.sidebar-overlay.open { display: block; }
+
 @media (max-width: 768px) {
-  .sidebar { display: none; }
+  .menu-toggle { display: inline-block; }
+  .sidebar {
+    position: fixed; left: -260px; top: 0; bottom: 0; z-index: 100;
+    width: 250px; min-width: 250px;
+    transition: left .2s ease;
+  }
+  .sidebar.open { left: 0; }
   .grid-4 { grid-template-columns: repeat(2, 1fr); }
 }
 </style>
@@ -582,9 +598,12 @@ tr:hover td { background: var(--bg-hover); }
     </div>
   </aside>
 
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
+
   <!-- Main -->
   <div class="main">
     <div class="main-header">
+      <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Menu">&#9776;</button>
       <span class="page-title" id="page-title">Dashboard</span>
       <div id="header-actions"></div>
     </div>
@@ -709,14 +728,34 @@ tr:hover td { background: var(--bg-hover); }
   let currentPage = 'dashboard';
   let pollTimer = null;
 
-  window.navigate = function(page) {
+  const validPages = new Set([
+    'dashboard','events','agents','teams','settings',
+    'runs','sessions','responses','access','chatroom',
+  ]);
+
+  function pageFromPath() {
+    const seg = location.pathname.replace(/^\/office\/?/, '').split('/')[0];
+    return validPages.has(seg) ? seg : 'dashboard';
+  }
+
+  window.navigate = function(page, pushState = true) {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     currentPage = page;
+    if (typeof closeSidebar === 'function') closeSidebar();
+    if (pushState) {
+      const url = '/office/' + page;
+      history.pushState({ page }, '', url);
+    }
     $$('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
     $('#page-title').textContent = pageTitle(page);
     $('#header-actions').innerHTML = '';
     renderPage(page);
   };
+
+  window.addEventListener('popstate', (e) => {
+    const page = (e.state && e.state.page) || pageFromPath();
+    navigate(page, false);
+  });
 
   function pageTitle(page) {
     const titles = {
@@ -801,13 +840,11 @@ tr:hover td { background: var(--bg-hover); }
   }
 
   async function renderDashboard(el) {
-    const [health, queue, agents, teams, doctor] = await Promise.all([
-      GET('/health'),
-      GET('/api/queue/status'),
-      GET('/api/agents'),
-      GET('/api/teams'),
-      GET('/api/doctor').catch(() => null),
-    ]);
+    const health = await GET('/health');
+    const queue = await GET('/api/queue/status');
+    const agents = await GET('/api/agents');
+    const teams = await GET('/api/teams');
+    const doctor = await GET('/api/doctor').catch(() => null);
 
     const components = health.components || {};
     const agentCount = Object.keys(agents.agents || {}).length;
@@ -918,6 +955,7 @@ tr:hover td { background: var(--bg-hover); }
           <td class="mono text-dim">${escapeHtml(a.think_level || 'default')}</td>
           <td>
             <div class="btn-group">
+              <button class="btn btn-sm" onclick="showAgentFiles('${escapeHtml(id)}')">Files</button>
               <button class="btn btn-sm" onclick="showEditAgentModal('${escapeHtml(id)}')">Edit</button>
               <button class="btn btn-danger btn-sm" onclick="deleteAgent('${escapeHtml(id)}')">Delete</button>
             </div>
@@ -949,7 +987,6 @@ tr:hover td { background: var(--bg-hover); }
           <option value="adaptive">Adaptive</option>
         </select>
       </div>
-      <div class="form-row"><label class="form-label">System Prompt (optional)</label><textarea class="form-textarea" id="m-agent-prompt"></textarea></div>
     `, '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitCreateAgent()">Create</button>');
     setupModelProviderBinding('');
   };
@@ -963,8 +1000,6 @@ tr:hover td { background: var(--bg-hover); }
       };
       const thinkLevel = $('#m-agent-think-level').value;
       if (thinkLevel) agent.think_level = thinkLevel;
-      const prompt = $('#m-agent-prompt').value.trim();
-      if (prompt) agent.system_prompt = prompt;
       await POST('/api/agents', { id: $('#m-agent-id').value, agent });
       closeModal();
       toast('Agent created', 'success');
@@ -991,7 +1026,6 @@ tr:hover td { background: var(--bg-hover); }
             ${['','off','minimal','low','medium','high','xhigh','adaptive'].map(v => `<option value="${v}" ${v===(a.think_level||'')?'selected':''}>${v || 'Default'}</option>`).join('')}
           </select>
         </div>
-        <div class="form-row"><label class="form-label">System Prompt</label><textarea class="form-textarea" id="m-agent-prompt">${escapeHtml(a.system_prompt || '')}</textarea></div>
       `, `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitEditAgent('${escapeHtml(id)}')">Save</button>`);
       setupModelProviderBinding(a.model || '');
     } catch (err) { toast(err.message, 'error'); }
@@ -1006,8 +1040,6 @@ tr:hover td { background: var(--bg-hover); }
       };
       const thinkLevel = $('#m-agent-think-level').value;
       if (thinkLevel) agent.think_level = thinkLevel;
-      const prompt = $('#m-agent-prompt').value.trim();
-      if (prompt) agent.system_prompt = prompt;
       await PUT(`/api/agents/${id}`, { agent });
       closeModal();
       toast('Agent updated', 'success');
@@ -1021,6 +1053,51 @@ tr:hover td { background: var(--bg-hover); }
       await DEL(`/api/agents/${id}`);
       toast('Agent deleted', 'success');
       navigate('agents');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  /* Agent Workspace Files */
+  window.showAgentFiles = async function(agentId) {
+    try {
+      const data = await GET(`/api/agents/${agentId}/files`);
+      const files = data.files || [];
+      const tabs = files.map((f, i) =>
+        `<button class="btn btn-sm ${i === 0 ? 'btn-primary' : ''}" data-file="${escapeHtml(f.name)}" onclick="selectAgentFile('${escapeHtml(agentId)}', '${escapeHtml(f.name)}', this)">${escapeHtml(f.name)}</button>`
+      ).join(' ');
+      showModal(`Files: ${agentId}`, `
+        <div style="margin-bottom:12px">${tabs}</div>
+        <div id="file-editor-status" style="margin-bottom:8px;font-size:12px;color:var(--text-dim)"></div>
+        <textarea class="form-textarea" id="file-editor-content" style="min-height:300px;font-family:var(--font-mono);font-size:13px;line-height:1.5"></textarea>
+      `, `<button class="btn" onclick="closeModal()">Close</button><button class="btn btn-primary" onclick="saveAgentFile('${escapeHtml(agentId)}')">Save</button>`);
+      if (files.length > 0) {
+        selectAgentFile(agentId, files[0].name, document.querySelector('[data-file]'));
+      }
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  window._currentFile = null;
+  window.selectAgentFile = async function(agentId, filename, btn) {
+    try {
+      document.querySelectorAll('[data-file]').forEach(b => b.classList.remove('btn-primary'));
+      if (btn) btn.classList.add('btn-primary');
+      window._currentFile = filename;
+      const status = $('#file-editor-status');
+      status.textContent = 'Loading...';
+      const data = await GET(`/api/agents/${agentId}/files/${filename}`);
+      $('#file-editor-content').value = data.content || '';
+      status.textContent = filename;
+    } catch (err) {
+      $('#file-editor-content').value = '';
+      $('#file-editor-status').textContent = 'File not found — saving will create it';
+    }
+  };
+
+  window.saveAgentFile = async function(agentId) {
+    if (!window._currentFile) return;
+    try {
+      const content = $('#file-editor-content').value;
+      await PUT(`/api/agents/${agentId}/files/${window._currentFile}`, { content });
+      toast(`${window._currentFile} saved`, 'success');
     } catch (err) { toast(err.message, 'error'); }
   };
 
@@ -1427,9 +1504,21 @@ tr:hover td { background: var(--bg-hover); }
     localStorage.setItem('clawpod-theme', next);
   };
 
+  /* ── Mobile sidebar ── */
+  window.toggleSidebar = function() {
+    $('.sidebar').classList.toggle('open');
+    $('#sidebar-overlay').classList.toggle('open');
+  };
+  window.closeSidebar = function() {
+    $('.sidebar').classList.remove('open');
+    $('#sidebar-overlay').classList.remove('open');
+  };
+
   /* ── Init ── */
   initTheme();
-  navigate('dashboard');
+  const initialPage = pageFromPath();
+  history.replaceState({ page: initialPage }, '', '/office/' + initialPage);
+  navigate(initialPage, false);
   connectSSE();
 })();
 </script>
