@@ -471,8 +471,6 @@ impl QueueProcessor {
             .get("effective_model")
             .cloned()
             .unwrap_or_else(|| agent.model.clone());
-        let prompt = apply_system_preamble(&prompt, &metadata);
-
         let think_level = agent.think_level.unwrap_or_default();
         let req = RunRequest {
             run_id,
@@ -1118,15 +1116,6 @@ fn resolve_output_file(working_directory: &Path, raw: &str) -> PathBuf {
 fn strip_chatroom_tags(response: &str) -> String {
     let tag_re = Regex::new(r"\[#(\S+?):\s*([\s\S]*?)\]").expect("valid regex");
     tag_re.replace_all(response, "").trim().to_string()
-}
-
-fn apply_system_preamble(prompt: &str, metadata: &HashMap<String, String>) -> String {
-    match metadata.get("system_preamble").map(String::as_str) {
-        Some(preamble) if !preamble.trim().is_empty() => {
-            format!("{preamble}\n\nUser request:\n{prompt}")
-        }
-        _ => prompt.to_string(),
-    }
 }
 
 fn provider_from_metadata(metadata: &HashMap<String, String>) -> Option<ProviderKind> {
