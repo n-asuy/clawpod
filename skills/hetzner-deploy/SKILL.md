@@ -326,17 +326,19 @@ dm_scope = \"per-channel-peer\"
 main_key = \"main\"
 
 [runner]
-default_provider = \"anthropic\"
+default_provider = \"openai\"  # or \"anthropic\"
 timeout_sec = 120
 
 [pairing]
 code_length = 8
 code_ttl_secs = 3600
 
+# OpenAI models (via codex): gpt-5.4, gpt-5.3-codex, gpt-5.1-codex, etc.
+# Anthropic models: claude-sonnet-4-6, claude-opus-4-6, etc.
 [agents.default]
 name = \"Default\"
-provider = \"anthropic\"
-model = \"claude-sonnet-4-5\"
+provider = \"openai\"  # or \"anthropic\" — match runner.default_provider
+model = \"gpt-5.4\"
 
 [teams.main]
 name = \"Main\"
