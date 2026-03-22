@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent::{build_system_prompt, clear_reset_flag, ensure_agent_workspace, ensure_session_workspace};
+use agent::{clear_reset_flag, ensure_agent_workspace, ensure_session_workspace, PromptContext, SystemPromptBuilder};
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use config::{CustomProviderConfig, RuntimeConfig};
@@ -867,15 +867,15 @@ impl QueueProcessor {
             Some(user_sections.join("\n\n"))
         };
 
-        // Build full system prompt: builtin instructions + teammate info + workspace context + user prompt
         let agent_root = self.config.resolve_agent_workdir(agent_id);
-        let full = build_system_prompt(
+        let ctx = PromptContext {
+            workspace_dir: agent_root.as_path(),
             agent_id,
-            &self.config.agents,
-            &self.config.teams,
-            Some(agent_root.as_path()),
-            user_prompt.as_deref(),
-        );
+            agents: &self.config.agents,
+            teams: &self.config.teams,
+            user_system_prompt: user_prompt.as_deref(),
+        };
+        let full = SystemPromptBuilder::with_defaults().build(&ctx)?;
 
         Ok(Some(full))
     }
