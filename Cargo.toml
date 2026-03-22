@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/runtime",
+    "crates/agent",
+    "crates/domain",
+    "crates/config",
+    "crates/plugins",
+    "crates/queue",
+    "crates/routing",
+    "crates/runner",
+    "crates/server",
+    "crates/team",
+    "crates/session",
+    "crates/store",
+    "crates/telegram",
+    "crates/discord",
+    "crates/slack",
+    "crates/observer",
+    "crates/pairing",
+]
+
+[workspace.package]
+edition = "2021"
+authors = ["Chronist"]
+license = "MIT"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1

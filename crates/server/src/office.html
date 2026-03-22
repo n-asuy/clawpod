@@ -1,0 +1,1437 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClawPod Office</title>
+<style>
+:root {
+  --sidebar-w: 220px;
+  --header-h: 48px;
+  --radius: 8px;
+  --transition: 150ms ease;
+}
+
+[data-theme="dark"] {
+  --bg: #0f1117;
+  --bg-surface: #1a1d27;
+  --bg-card: #222533;
+  --bg-hover: #2a2d3d;
+  --border: #2e3144;
+  --text: #e4e6ed;
+  --text-dim: #8b8fa3;
+  --text-muted: #5c6078;
+  --accent: #6c8aff;
+  --accent-dim: #4a62c4;
+  --green: #4ade80;
+  --red: #f87171;
+  --yellow: #fbbf24;
+  --orange: #fb923c;
+  --badge-green-bg: rgba(74, 222, 128, .15);
+  --badge-red-bg: rgba(248, 113, 113, .15);
+  --badge-yellow-bg: rgba(251, 191, 36, .15);
+  --badge-blue-bg: rgba(108, 138, 255, .15);
+  --badge-gray-bg: rgba(139, 143, 163, .15);
+  --shadow: 0 4px 12px rgba(0, 0, 0, .3);
+}
+
+[data-theme="light"] {
+  --bg: #f5f6f8;
+  --bg-surface: #ffffff;
+  --bg-card: #ffffff;
+  --bg-hover: #f0f1f4;
+  --border: #e0e2e8;
+  --text: #1a1d27;
+  --text-dim: #555a6e;
+  --text-muted: #8b8fa3;
+  --accent: #4a6cf7;
+  --accent-dim: #3b5ad9;
+  --green: #22c55e;
+  --red: #ef4444;
+  --yellow: #d97706;
+  --orange: #ea580c;
+  --badge-green-bg: rgba(34, 197, 94, .12);
+  --badge-red-bg: rgba(239, 68, 68, .12);
+  --badge-yellow-bg: rgba(217, 119, 6, .12);
+  --badge-blue-bg: rgba(74, 108, 247, .1);
+  --badge-gray-bg: rgba(139, 143, 163, .1);
+  --shadow: 0 4px 12px rgba(0, 0, 0, .08);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Layout */
+.layout {
+  display: flex;
+  height: 100vh;
+}
+
+/* Sidebar */
+.sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.3px;
+  flex-shrink: 0;
+}
+
+.sidebar-header span { color: var(--accent); margin-right: 6px; }
+
+.sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.nav-section {
+  margin-top: 12px;
+  margin-bottom: 4px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 13px;
+  transition: background var(--transition), color var(--transition);
+  user-select: none;
+}
+
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.nav-item.active { background: var(--accent-dim); color: #fff; }
+.nav-icon { font-size: 16px; width: 20px; text-align: center; flex-shrink: 0; }
+
+.sidebar-footer {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.status-dot.ok { background: var(--green); }
+.status-dot.error { background: var(--red); }
+
+/* Main content */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.main-header {
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.page-title { font-weight: 600; font-size: 16px; }
+
+.main-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+/* Cards */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.card-body { padding: 16px; }
+
+/* Grid */
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.grid-4 { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+
+/* Stat cards */
+.stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.stat-label { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+.stat-value { font-size: 24px; font-weight: 700; }
+.stat-value.green { color: var(--green); }
+.stat-value.red { color: var(--red); }
+.stat-value.yellow { color: var(--yellow); }
+
+/* Tables */
+.table-wrap { overflow-x: auto; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th {
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--bg-hover); }
+
+/* Badges */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.badge-green { background: var(--badge-green-bg); color: var(--green); }
+.badge-red { background: var(--badge-red-bg); color: var(--red); }
+.badge-yellow { background: var(--badge-yellow-bg); color: var(--yellow); }
+.badge-blue { background: var(--badge-blue-bg); color: var(--accent); }
+.badge-gray { background: var(--badge-gray-bg); color: var(--text-dim); }
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.btn:hover { background: var(--bg-hover); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-dim); }
+.btn-danger { background: var(--badge-red-bg); border-color: var(--red); color: var(--red); }
+.btn-danger:hover { opacity: .85; }
+.btn-sm { padding: 3px 10px; font-size: 12px; }
+
+.btn-group { display: flex; gap: 6px; }
+
+/* Forms */
+.form-row { margin-bottom: 12px; }
+.form-label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; font-weight: 600; }
+
+.form-input, .form-select, .form-textarea {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.form-input:focus, .form-select:focus, .form-textarea:focus { border-color: var(--accent); }
+.form-textarea { resize: vertical; min-height: 60px; }
+
+/* Dialog / Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: 480px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+
+.modal-body { padding: 20px; }
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 2px;
+}
+
+.modal-close:hover { color: var(--text); }
+
+/* Events log */
+.event-item {
+  display: flex;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.event-item:last-child { border-bottom: none; }
+
+.event-time {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.event-type {
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.event-payload {
+  color: var(--text-dim);
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Chat */
+.chat-container { display: flex; flex-direction: column; height: 100%; }
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.chain-step {
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.chain-step-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.chain-step-agent {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.chain-step-index {
+  color: var(--text-muted);
+  font-family: 'SF Mono', 'Menlo', monospace;
+}
+
+.chain-step-body {
+  padding: 8px 12px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chain-step-input {
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Misc */
+.empty { color: var(--text-muted); font-size: 13px; padding: 24px 0; text-align: center; }
+.mono { font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.text-dim { color: var(--text-dim); }
+.text-muted { color: var(--text-muted); }
+.mt-4 { margin-top: 16px; }
+.mb-4 { margin-bottom: 16px; }
+.hidden { display: none !important; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Toast */
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  padding: 10px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  box-shadow: var(--shadow);
+  animation: toast-in .2s ease;
+}
+
+.toast.error { border-color: var(--red); }
+.toast.success { border-color: var(--green); }
+
+@keyframes toast-in {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+[data-theme="light"] .card {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .06);
+}
+
+[data-theme="light"] .sidebar {
+  box-shadow: 1px 0 3px rgba(0, 0, 0, .04);
+}
+
+/* Theme toggle */
+.theme-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 14px;
+  transition: color var(--transition), border-color var(--transition);
+  line-height: 1;
+}
+
+.theme-toggle:hover { color: var(--text); border-color: var(--text-dim); }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .sidebar { display: none; }
+  .grid-4 { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header"><span>&#9654;</span> ClawPod</div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">Overview</div>
+      <div class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
+        <span class="nav-icon">&#9632;</span> Dashboard
+      </div>
+      <div class="nav-item" data-page="events" onclick="navigate('events')">
+        <span class="nav-icon">&#9881;</span> Events
+      </div>
+
+      <div class="nav-section">Configuration</div>
+      <div class="nav-item" data-page="agents" onclick="navigate('agents')">
+        <span class="nav-icon">&#9673;</span> Agents
+      </div>
+      <div class="nav-item" data-page="teams" onclick="navigate('teams')">
+        <span class="nav-icon">&#9733;</span> Teams
+      </div>
+      <div class="nav-item" data-page="settings" onclick="navigate('settings')">
+        <span class="nav-icon">&#9881;</span> Settings
+      </div>
+
+      <div class="nav-section">Runtime</div>
+      <div class="nav-item" data-page="runs" onclick="navigate('runs')">
+        <span class="nav-icon">&#9654;</span> Runs
+      </div>
+      <div class="nav-item" data-page="sessions" onclick="navigate('sessions')">
+        <span class="nav-icon">&#8644;</span> Sessions
+      </div>
+      <div class="nav-item" data-page="responses" onclick="navigate('responses')">
+        <span class="nav-icon">&#9993;</span> Responses
+      </div>
+      <div class="nav-item" data-page="access" onclick="navigate('access')">
+        <span class="nav-icon">&#128274;</span> Access
+      </div>
+
+      <div class="nav-section">Collaboration</div>
+      <div class="nav-item" data-page="chatroom" onclick="navigate('chatroom')">
+        <span class="nav-icon">&#128172;</span> Chatroom
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div class="connection-status">
+          <span class="status-dot" id="sse-dot"></span>
+          <span id="sse-label">Connecting...</span>
+        </div>
+        <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle theme">&#9790;</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="main-header">
+      <span class="page-title" id="page-title">Dashboard</span>
+      <div id="header-actions"></div>
+    </div>
+    <div class="main-content" id="page-container"></div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- Modal container -->
+<div id="modal-root"></div>
+
+<script>
+(function() {
+  'use strict';
+
+  /* ── Helpers ── */
+  const $ = (sel, root) => (root || document).querySelector(sel);
+  const $$ = (sel, root) => [...(root || document).querySelectorAll(sel)];
+
+  const params = new URLSearchParams(location.search);
+  const TOKEN = params.get('token') || '';
+
+  function apiUrl(path) {
+    const u = new URL(path, location.origin);
+    if (TOKEN) u.searchParams.set('token', TOKEN);
+    return u.toString();
+  }
+
+  function authHeaders() {
+    const h = { 'Content-Type': 'application/json' };
+    if (TOKEN) h['Authorization'] = `Bearer ${TOKEN}`;
+    return h;
+  }
+
+  async function api(method, path, body) {
+    const opts = { method, headers: authHeaders() };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    const res = await fetch(apiUrl(path), opts);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`${res.status}: ${text}`);
+    }
+    return res.json();
+  }
+
+  const GET = (p) => api('GET', p);
+  const POST = (p, b) => api('POST', p, b);
+  const PUT = (p, b) => api('PUT', p, b);
+  const DEL = (p) => api('DELETE', p);
+
+  function toast(msg, type) {
+    const el = document.createElement('div');
+    el.className = `toast ${type || ''}`;
+    el.textContent = msg;
+    $('#toast-container').appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '-';
+    try {
+      const d = new Date(iso);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch { return iso; }
+  }
+
+  function fmtDateTime(iso) {
+    if (!iso) return '-';
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch { return iso; }
+  }
+
+  function statusBadge(status) {
+    const s = (status || '').toLowerCase();
+    if (s === 'succeeded' || s === 'ok' || s === 'approved' || s === 'running') {
+      const cls = s === 'running' ? 'badge-blue' : 'badge-green';
+      return `<span class="badge ${cls}">${status}</span>`;
+    }
+    if (s === 'failed' || s === 'error' || s === 'rejected') {
+      return `<span class="badge badge-red">${status}</span>`;
+    }
+    if (s === 'pending' || s === 'pending_approval') {
+      return `<span class="badge badge-yellow">${status}</span>`;
+    }
+    return `<span class="badge badge-gray">${status}</span>`;
+  }
+
+  function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  function truncate(str, len) {
+    if (!str) return '';
+    return str.length > len ? str.slice(0, len) + '...' : str;
+  }
+
+  /* ── Modal ── */
+  function showModal(title, bodyHtml, footerHtml) {
+    const root = $('#modal-root');
+    root.innerHTML = `
+      <div class="modal-overlay" onclick="if(event.target===this)closeModal()">
+        <div class="modal">
+          <div class="modal-header">
+            <span>${escapeHtml(title)}</span>
+            <button class="modal-close" onclick="closeModal()">&times;</button>
+          </div>
+          <div class="modal-body">${bodyHtml}</div>
+          ${footerHtml ? `<div class="modal-footer">${footerHtml}</div>` : ''}
+        </div>
+      </div>`;
+  }
+
+  window.closeModal = () => { $('#modal-root').innerHTML = ''; };
+
+  /* ── Navigation ── */
+  let currentPage = 'dashboard';
+  let pollTimer = null;
+
+  window.navigate = function(page) {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    currentPage = page;
+    $$('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
+    $('#page-title').textContent = pageTitle(page);
+    $('#header-actions').innerHTML = '';
+    renderPage(page);
+  };
+
+  function pageTitle(page) {
+    const titles = {
+      dashboard: 'Dashboard', events: 'Events', agents: 'Agents', teams: 'Teams',
+      settings: 'Settings', runs: 'Runs', sessions: 'Sessions', responses: 'Pending Responses',
+      access: 'Sender Access', chatroom: 'Chatroom',
+    };
+    return titles[page] || page;
+  }
+
+  /* ── Pages ── */
+  async function renderPage(page) {
+    const container = $('#page-container');
+    container.innerHTML = '<div class="empty">Loading...</div>';
+    try {
+      switch (page) {
+        case 'dashboard': await renderDashboard(container); break;
+        case 'events': await renderEvents(container); break;
+        case 'agents': await renderAgents(container); break;
+        case 'teams': await renderTeams(container); break;
+        case 'settings': await renderSettings(container); break;
+        case 'runs': await renderRuns(container); break;
+        case 'sessions': await renderSessions(container); break;
+        case 'responses': await renderResponses(container); break;
+        case 'access': await renderAccess(container); break;
+        case 'chatroom': await renderChatroom(container); break;
+      }
+    } catch (err) {
+      container.innerHTML = `<div class="empty" style="color:var(--red)">Error: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  /* Dashboard */
+  let modelCatalogCache = null;
+  async function loadModelCatalog() {
+    if (!modelCatalogCache) {
+      const data = await GET('/api/models');
+      modelCatalogCache = data.models || [];
+    }
+    return modelCatalogCache;
+  }
+
+  function populateModelSelect(selectEl, provider, currentModel) {
+    const models = (modelCatalogCache || []).filter(m => m.provider === provider);
+    const isKnown = models.some(m => m.id === currentModel);
+    let options = models.map(m =>
+      `<option value="${m.id}" ${m.id === currentModel ? 'selected' : ''}>${escapeHtml(m.name)} (${m.id})</option>`
+    ).join('');
+    options += `<option value="__custom__" ${(!isKnown && currentModel) ? 'selected' : ''}>Custom...</option>`;
+    selectEl.innerHTML = options;
+    const customRow = document.getElementById('m-agent-model-custom-row');
+    if (customRow) {
+      if (selectEl.value === '__custom__') {
+        customRow.style.display = '';
+        document.getElementById('m-agent-model-custom').value = currentModel || '';
+      } else {
+        customRow.style.display = 'none';
+      }
+    }
+  }
+
+  function setupModelProviderBinding(currentModel) {
+    const providerEl = document.getElementById('m-agent-provider');
+    const modelEl = document.getElementById('m-agent-model');
+    if (!providerEl || !modelEl) return;
+    populateModelSelect(modelEl, providerEl.value, currentModel || '');
+    providerEl.addEventListener('change', () => populateModelSelect(modelEl, providerEl.value, ''));
+    modelEl.addEventListener('change', () => {
+      const customRow = document.getElementById('m-agent-model-custom-row');
+      if (customRow) {
+        customRow.style.display = modelEl.value === '__custom__' ? '' : 'none';
+      }
+    });
+  }
+
+  function resolveModelValue() {
+    const sel = document.getElementById('m-agent-model');
+    if (sel && sel.value === '__custom__') {
+      return document.getElementById('m-agent-model-custom').value;
+    }
+    return sel ? sel.value : '';
+  }
+
+  async function renderDashboard(el) {
+    const [health, queue, agents, teams, doctor] = await Promise.all([
+      GET('/health'),
+      GET('/api/queue/status'),
+      GET('/api/agents'),
+      GET('/api/teams'),
+      GET('/api/doctor').catch(() => null),
+    ]);
+
+    const components = health.components || {};
+    const agentCount = Object.keys(agents.agents || {}).length;
+    const teamCount = Object.keys(teams.teams || {}).length;
+    const totalQueue = (queue.incoming || 0) + (queue.processing || 0) + (queue.outgoing || 0);
+
+    el.innerHTML = `
+      <div class="grid-4 mb-4">
+        <div class="stat">
+          <div class="stat-label">Agents</div>
+          <div class="stat-value">${agentCount}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Teams</div>
+          <div class="stat-value">${teamCount}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Queue Total</div>
+          <div class="stat-value ${totalQueue > 0 ? 'yellow' : 'green'}">${totalQueue}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Dead Letter</div>
+          <div class="stat-value ${(queue.dead_letter || 0) > 0 ? 'red' : 'green'}">${queue.dead_letter || 0}</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header">Queue Breakdown</div>
+          <div class="card-body">
+            <table>
+              <tr><td>Incoming</td><td style="text-align:right;font-weight:600">${queue.incoming || 0}</td></tr>
+              <tr><td>Processing</td><td style="text-align:right;font-weight:600">${queue.processing || 0}</td></tr>
+              <tr><td>Outgoing</td><td style="text-align:right;font-weight:600">${queue.outgoing || 0}</td></tr>
+              <tr><td>Dead Letter</td><td style="text-align:right;font-weight:600">${queue.dead_letter || 0}</td></tr>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">Components</div>
+          <div class="card-body">
+            ${Object.keys(components).length === 0 ? '<div class="empty">No components</div>' :
+              '<table>' + Object.entries(components).map(([name, c]) =>
+                `<tr>
+                  <td>${escapeHtml(name)}</td>
+                  <td>${statusBadge(c.status)}</td>
+                  <td class="text-dim mono">${fmtTime(c.updated_at)}</td>
+                </tr>`
+              ).join('') + '</table>'
+            }
+          </div>
+        </div>
+      </div>
+      ${doctor ? `<div class="card mt-4">
+        <div class="card-header">Provider Status</div>
+        <div class="card-body">
+          <table>
+            <tr>
+              <td>Claude CLI</td>
+              <td>${statusBadge(doctor.claude.installed ? 'ok' : 'error')}</td>
+              <td class="mono text-dim">${escapeHtml(doctor.claude.version || 'not installed')}</td>
+            </tr>
+            <tr>
+              <td>Codex CLI</td>
+              <td>${statusBadge(doctor.codex.installed ? 'ok' : 'error')}</td>
+              <td class="mono text-dim">${escapeHtml(doctor.codex.version || 'not installed')}</td>
+            </tr>
+            ${(() => {
+              const ca = doctor.codex_auth || {};
+              const usable = ca.auth_file_exists && ca.has_access_token && !ca.token_expired;
+              const badge = usable ? 'ok' : (ca.token_expired ? 'degraded' : 'error');
+              const label = ca.has_access_token ? (ca.token_expired ? 'expired' : 'valid') : 'not logged in';
+              return `<tr>
+                <td>Codex Auth</td>
+                <td>${statusBadge(badge)}</td>
+                <td class="mono text-dim">${label}${!usable ? ' &mdash; run <code>clawpod auth openai</code>' : (ca.expires_at ? ' (expires ' + ca.expires_at.slice(0,16).replace('T',' ') + ')' : '')}</td>
+              </tr>`;
+            })()}
+          </table>
+          ${(doctor.warnings || []).length > 0 ? '<div style="margin-top:8px;padding:8px;background:var(--badge-yellow-bg,#fef3cd);border-radius:6px;font-size:12px;color:var(--yellow,#856404)">' + doctor.warnings.map(w => '<div>' + escapeHtml(w) + '</div>').join('') + '</div>' : ''}
+        </div>
+      </div>` : ''}`;
+
+    pollTimer = setInterval(() => { if (currentPage === 'dashboard') renderDashboard(el); }, 5000);
+  }
+
+  /* Agents */
+  async function renderAgents(el) {
+    const data = await GET('/api/agents');
+    const agents = data.agents || {};
+    const entries = Object.entries(agents);
+
+    $('#header-actions').innerHTML = '<button class="btn btn-primary btn-sm" onclick="showCreateAgentModal()">+ Add Agent</button>';
+
+    if (entries.length === 0) {
+      el.innerHTML = '<div class="empty">No agents configured</div>';
+      return;
+    }
+
+    el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
+      <thead><tr><th>ID</th><th>Name</th><th>Provider</th><th>Model</th><th>Think</th><th></th></tr></thead>
+      <tbody>
+        ${entries.map(([id, a]) => `<tr>
+          <td class="mono">${escapeHtml(id)}</td>
+          <td>${escapeHtml(a.name)}</td>
+          <td><span class="badge badge-blue">${escapeHtml(a.provider || '')}</span></td>
+          <td class="mono text-dim">${escapeHtml(a.model)}</td>
+          <td class="mono text-dim">${escapeHtml(a.think_level || 'default')}</td>
+          <td>
+            <div class="btn-group">
+              <button class="btn btn-sm" onclick="showEditAgentModal('${escapeHtml(id)}')">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteAgent('${escapeHtml(id)}')">Delete</button>
+            </div>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div></div>`;
+  }
+
+  window.showCreateAgentModal = async function() {
+    await loadModelCatalog();
+    showModal('Create Agent', `
+      <div class="form-row"><label class="form-label">ID</label><input class="form-input" id="m-agent-id" placeholder="e.g. researcher"></div>
+      <div class="form-row"><label class="form-label">Name</label><input class="form-input" id="m-agent-name" placeholder="Agent display name"></div>
+      <div class="form-row"><label class="form-label">Provider</label>
+        <select class="form-select" id="m-agent-provider"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option><option value="custom">Custom</option><option value="mock">Mock</option></select>
+      </div>
+      <div class="form-row"><label class="form-label">Model</label><select class="form-select" id="m-agent-model"></select></div>
+      <div class="form-row" id="m-agent-model-custom-row" style="display:none"><label class="form-label">Custom Model ID</label><input class="form-input" id="m-agent-model-custom" placeholder="e.g. claude-sonnet-4-20250514"></div>
+      <div class="form-row"><label class="form-label">Think Level</label>
+        <select class="form-select" id="m-agent-think-level">
+          <option value="">Default</option>
+          <option value="off">Off</option>
+          <option value="minimal">Minimal</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="xhigh">Xhigh</option>
+          <option value="adaptive">Adaptive</option>
+        </select>
+      </div>
+      <div class="form-row"><label class="form-label">System Prompt (optional)</label><textarea class="form-textarea" id="m-agent-prompt"></textarea></div>
+    `, '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitCreateAgent()">Create</button>');
+    setupModelProviderBinding('');
+  };
+
+  window.submitCreateAgent = async function() {
+    try {
+      const agent = {
+        name: $('#m-agent-name').value,
+        provider: $('#m-agent-provider').value,
+        model: resolveModelValue(),
+      };
+      const thinkLevel = $('#m-agent-think-level').value;
+      if (thinkLevel) agent.think_level = thinkLevel;
+      const prompt = $('#m-agent-prompt').value.trim();
+      if (prompt) agent.system_prompt = prompt;
+      await POST('/api/agents', { id: $('#m-agent-id').value, agent });
+      closeModal();
+      toast('Agent created', 'success');
+      navigate('agents');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  window.showEditAgentModal = async function(id) {
+    try {
+      await loadModelCatalog();
+      const data = await GET(`/api/agents/${id}`);
+      const a = data.agent;
+      showModal(`Edit Agent: ${id}`, `
+        <div class="form-row"><label class="form-label">Name</label><input class="form-input" id="m-agent-name" value="${escapeHtml(a.name)}"></div>
+        <div class="form-row"><label class="form-label">Provider</label>
+          <select class="form-select" id="m-agent-provider">
+            ${['anthropic','openai','custom','mock'].map(p => `<option value="${p}" ${p===a.provider?'selected':''}>${p}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row"><label class="form-label">Model</label><select class="form-select" id="m-agent-model"></select></div>
+        <div class="form-row" id="m-agent-model-custom-row" style="display:none"><label class="form-label">Custom Model ID</label><input class="form-input" id="m-agent-model-custom"></div>
+        <div class="form-row"><label class="form-label">Think Level</label>
+          <select class="form-select" id="m-agent-think-level">
+            ${['','off','minimal','low','medium','high','xhigh','adaptive'].map(v => `<option value="${v}" ${v===(a.think_level||'')?'selected':''}>${v || 'Default'}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row"><label class="form-label">System Prompt</label><textarea class="form-textarea" id="m-agent-prompt">${escapeHtml(a.system_prompt || '')}</textarea></div>
+      `, `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitEditAgent('${escapeHtml(id)}')">Save</button>`);
+      setupModelProviderBinding(a.model || '');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  window.submitEditAgent = async function(id) {
+    try {
+      const agent = {
+        name: $('#m-agent-name').value,
+        provider: $('#m-agent-provider').value,
+        model: resolveModelValue(),
+      };
+      const thinkLevel = $('#m-agent-think-level').value;
+      if (thinkLevel) agent.think_level = thinkLevel;
+      const prompt = $('#m-agent-prompt').value.trim();
+      if (prompt) agent.system_prompt = prompt;
+      await PUT(`/api/agents/${id}`, { agent });
+      closeModal();
+      toast('Agent updated', 'success');
+      navigate('agents');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  window.deleteAgent = async function(id) {
+    if (!confirm(`Delete agent "${id}"?`)) return;
+    try {
+      await DEL(`/api/agents/${id}`);
+      toast('Agent deleted', 'success');
+      navigate('agents');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  /* Teams */
+  async function renderTeams(el) {
+    const data = await GET('/api/teams');
+    const teams = data.teams || {};
+    const entries = Object.entries(teams);
+
+    $('#header-actions').innerHTML = '<button class="btn btn-primary btn-sm" onclick="showCreateTeamModal()">+ Add Team</button>';
+
+    if (entries.length === 0) {
+      el.innerHTML = '<div class="empty">No teams configured</div>';
+      return;
+    }
+
+    el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
+      <thead><tr><th>ID</th><th>Name</th><th>Leader</th><th>Agents</th><th></th></tr></thead>
+      <tbody>
+        ${entries.map(([id, t]) => `<tr>
+          <td class="mono">${escapeHtml(id)}</td>
+          <td>${escapeHtml(t.name)}</td>
+          <td><span class="badge badge-blue">${escapeHtml(t.leader_agent)}</span></td>
+          <td>${(t.agents || []).map(a => `<span class="badge badge-gray" style="margin-right:4px">${escapeHtml(a)}</span>`).join('')}</td>
+          <td>
+            <div class="btn-group">
+              <button class="btn btn-sm" onclick="showEditTeamModal('${escapeHtml(id)}')">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteTeam('${escapeHtml(id)}')">Delete</button>
+            </div>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div></div>`;
+  }
+
+  window.showCreateTeamModal = async function() {
+    const agentsData = await GET('/api/agents');
+    const agentIds = Object.keys(agentsData.agents || {});
+    showModal('Create Team', `
+      <div class="form-row"><label class="form-label">ID</label><input class="form-input" id="m-team-id" placeholder="e.g. support-team"></div>
+      <div class="form-row"><label class="form-label">Name</label><input class="form-input" id="m-team-name" placeholder="Team display name"></div>
+      <div class="form-row"><label class="form-label">Leader Agent</label>
+        <select class="form-select" id="m-team-leader">${agentIds.map(a => `<option value="${a}">${a}</option>`).join('')}</select>
+      </div>
+      <div class="form-row"><label class="form-label">Agents</label>
+        <div id="m-team-agents" style="display:flex;flex-wrap:wrap;gap:6px">
+          ${agentIds.map(a => `<label style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:13px"><input type="checkbox" value="${a}" checked> ${a}</label>`).join('')}
+        </div>
+      </div>
+    `, '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitCreateTeam()">Create</button>');
+  };
+
+  window.submitCreateTeam = async function() {
+    try {
+      await POST('/api/teams', {
+        id: $('#m-team-id').value,
+        team: {
+          name: $('#m-team-name').value,
+          leader_agent: $('#m-team-leader').value,
+          agents: [...$('#m-team-agents').querySelectorAll('input:checked')].map(cb => cb.value),
+        },
+      });
+      closeModal();
+      toast('Team created', 'success');
+      navigate('teams');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  window.showEditTeamModal = async function(id) {
+    const [teamData, agentsData] = await Promise.all([GET(`/api/teams/${id}`), GET('/api/agents')]);
+    const t = teamData.team;
+    const agentIds = Object.keys(agentsData.agents || {});
+    showModal(`Edit Team: ${id}`, `
+      <div class="form-row"><label class="form-label">Name</label><input class="form-input" id="m-team-name" value="${escapeHtml(t.name)}"></div>
+      <div class="form-row"><label class="form-label">Leader Agent</label>
+        <select class="form-select" id="m-team-leader">${agentIds.map(a => `<option value="${a}" ${a===t.leader_agent?'selected':''}>${a}</option>`).join('')}</select>
+      </div>
+      <div class="form-row"><label class="form-label">Agents</label>
+        <div id="m-team-agents" style="display:flex;flex-wrap:wrap;gap:6px">
+          ${agentIds.map(a => `<label style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:13px"><input type="checkbox" value="${a}" ${(t.agents||[]).includes(a)?'checked':''}> ${a}</label>`).join('')}
+        </div>
+      </div>
+    `, `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitEditTeam('${escapeHtml(id)}')">Save</button>`);
+  };
+
+  window.submitEditTeam = async function(id) {
+    try {
+      await PUT(`/api/teams/${id}`, {
+        team: {
+          name: $('#m-team-name').value,
+          leader_agent: $('#m-team-leader').value,
+          agents: [...$('#m-team-agents').querySelectorAll('input:checked')].map(cb => cb.value),
+        },
+      });
+      closeModal();
+      toast('Team updated', 'success');
+      navigate('teams');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  window.deleteTeam = async function(id) {
+    if (!confirm(`Delete team "${id}"?`)) return;
+    try {
+      await DEL(`/api/teams/${id}`);
+      toast('Team deleted', 'success');
+      navigate('teams');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  /* Runs */
+  async function renderRuns(el) {
+    const data = await GET('/api/runs?limit=100');
+    const runs = data.runs || [];
+
+    if (runs.length === 0) {
+      el.innerHTML = '<div class="empty">No runs</div>';
+      return;
+    }
+
+    el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
+      <thead><tr><th>ID</th><th>Agent</th><th>Status</th><th>Session</th><th>Created</th><th>Updated</th></tr></thead>
+      <tbody>
+        ${runs.map(r => `<tr>
+          <td class="mono" style="max-width:100px" title="${escapeHtml(r.run_id)}">${truncate(r.run_id, 12)}</td>
+          <td><span class="badge badge-blue">${escapeHtml(r.agent_id)}</span></td>
+          <td>${statusBadge(r.status)}</td>
+          <td class="mono text-dim" title="${escapeHtml(r.session_key)}">${truncate(r.session_key, 20)}</td>
+          <td class="text-dim">${fmtDateTime(r.created_at)}</td>
+          <td class="text-dim">${fmtDateTime(r.updated_at)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div></div>`;
+
+    pollTimer = setInterval(() => { if (currentPage === 'runs') renderRuns(el); }, 5000);
+  }
+
+  /* Sessions */
+  async function renderSessions(el) {
+    const data = await GET('/api/sessions');
+    const sessions = data.sessions || [];
+
+    if (sessions.length === 0) {
+      el.innerHTML = '<div class="empty">No sessions</div>';
+      return;
+    }
+
+    el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
+      <thead><tr><th>Session Key</th><th>Agent</th><th>Created</th><th>Updated</th></tr></thead>
+      <tbody>
+        ${sessions.map(s => `<tr>
+          <td class="mono" title="${escapeHtml(s.session_key)}">${truncate(s.session_key, 30)}</td>
+          <td><span class="badge badge-blue">${escapeHtml(s.agent_id)}</span></td>
+          <td class="text-dim">${fmtDateTime(s.created_at)}</td>
+          <td class="text-dim">${fmtDateTime(s.updated_at)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div></div>`;
+  }
+
+  /* Events */
+  async function renderEvents(el) {
+    const data = await GET('/api/logs/events?limit=200');
+    const events = data.events || [];
+
+    if (events.length === 0) {
+      el.innerHTML = '<div class="empty">No events</div>';
+      return;
+    }
+
+    el.innerHTML = `<div class="card"><div class="card-body">
+      ${events.map(e => `<div class="event-item">
+        <span class="event-time">${fmtTime(e.created_at)}</span>
+        <span class="event-type">${escapeHtml(e.event_type)}</span>
+        <span class="event-payload">${escapeHtml(typeof e.payload === 'string' ? e.payload : JSON.stringify(e.payload))}</span>
+      </div>`).join('')}
+    </div></div>`;
+  }
+
+  /* Responses */
+  async function renderResponses(el) {
+    const data = await GET('/api/responses');
+    const responses = data.responses || [];
+
+    if (responses.length === 0) {
+      el.innerHTML = '<div class="empty">No pending responses</div>';
+      return;
+    }
+
+    el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
+      <thead><tr><th>Channel</th><th>Recipient</th><th>Agent</th><th>Message</th></tr></thead>
+      <tbody>
+        ${responses.map(r => `<tr>
+          <td><span class="badge badge-gray">${escapeHtml(r.channel || '')}</span></td>
+          <td class="mono">${escapeHtml(r.recipient_id || '')}</td>
+          <td><span class="badge badge-blue">${escapeHtml(r.agent_id || '')}</span></td>
+          <td class="text-dim" style="max-width:400px">${escapeHtml(truncate(r.message || '', 120))}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div></div>`;
+
+    pollTimer = setInterval(() => { if (currentPage === 'responses') renderResponses(el); }, 5000);
+  }
+
+  /* Access */
+  async function renderAccess(el) {
+    const data = await GET('/api/access/senders');
+    const entries = data.entries || [];
+
+    if (entries.length === 0) {
+      el.innerHTML = '<div class="empty">No sender access entries</div>';
+      return;
+    }
+
+    el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
+      <thead><tr><th>Channel</th><th>Sender</th><th>Status</th><th>Peer</th><th>Requested</th><th></th></tr></thead>
+      <tbody>
+        ${entries.map(e => `<tr>
+          <td><span class="badge badge-gray">${escapeHtml(e.channel)}</span></td>
+          <td class="mono">${escapeHtml(e.sender_id)}${e.sender_label ? ` <span class="text-dim">(${escapeHtml(e.sender_label)})</span>` : ''}</td>
+          <td>${statusBadge(e.status)}</td>
+          <td class="mono text-dim">${escapeHtml(e.peer_id)}</td>
+          <td class="text-dim">${fmtDateTime(e.requested_at)}</td>
+          <td>
+            ${e.status === 'pending_approval' ? `
+              <div class="btn-group">
+                <button class="btn btn-sm" style="color:var(--green)" onclick="approveSender('${escapeHtml(e.channel)}','${escapeHtml(e.sender_id)}')">Approve</button>
+                <button class="btn btn-danger btn-sm" onclick="rejectSender('${escapeHtml(e.channel)}','${escapeHtml(e.sender_id)}')">Reject</button>
+              </div>
+            ` : ''}
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div></div>`;
+  }
+
+  window.approveSender = async function(channel, senderId) {
+    try {
+      await POST(`/api/access/senders/${channel}/${senderId}/approve`);
+      toast('Sender approved', 'success');
+      navigate('access');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  window.rejectSender = async function(channel, senderId) {
+    try {
+      await POST(`/api/access/senders/${channel}/${senderId}/reject`);
+      toast('Sender rejected', 'success');
+      navigate('access');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  /* Settings */
+  async function renderSettings(el) {
+    const data = await GET('/api/settings');
+    const config = data.config || {};
+
+    el.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <span>Runtime Configuration</span>
+          <span class="mono text-dim" style="font-weight:400;font-size:12px">${escapeHtml(data.config_path || '')}</span>
+        </div>
+        <div class="card-body">
+          <textarea class="form-textarea" id="settings-json" style="min-height:400px;font-family:'SF Mono','Menlo',monospace;font-size:12px">${escapeHtml(JSON.stringify(config, null, 2))}</textarea>
+          <div style="margin-top:12px;display:flex;justify-content:flex-end">
+            <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  window.saveSettings = async function() {
+    try {
+      const json = JSON.parse($('#settings-json').value);
+      await PUT('/api/settings', json);
+      toast('Settings saved (restart runtime for full effect)', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  /* Chatroom */
+  let chatTeamId = null;
+
+  async function renderChatroom(el) {
+    const teamsData = await GET('/api/teams');
+    const teamIds = Object.keys(teamsData.teams || {});
+
+    if (teamIds.length === 0) {
+      el.innerHTML = '<div class="empty">No teams configured</div>';
+      return;
+    }
+
+    if (!chatTeamId || !teamIds.includes(chatTeamId)) chatTeamId = teamIds[0];
+
+    el.innerHTML = `
+      <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px">
+        <label class="form-label" style="margin:0">Team:</label>
+        <select class="form-select" id="chat-team-select" style="width:auto" onchange="switchChatTeam(this.value)">
+          ${teamIds.map(t => `<option value="${t}" ${t===chatTeamId?'selected':''}>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div class="card" style="height:calc(100vh - 200px);overflow-y:auto;padding:16px">
+        <div id="chain-steps-container"></div>
+      </div>`;
+
+    loadChainSteps();
+    pollTimer = setInterval(() => { if (currentPage === 'chatroom') loadChainSteps(); }, 5000);
+  }
+
+  window.switchChatTeam = function(id) {
+    chatTeamId = id;
+    loadChainSteps();
+  };
+
+  function truncate(text, max) {
+    if (!text || text.length <= max) return text;
+    return text.slice(0, max) + '...';
+  }
+
+  async function loadChainSteps() {
+    if (!chatTeamId) return;
+    try {
+      const data = await GET(`/api/chatroom/${chatTeamId}?limit=100`);
+      const steps = data.steps || [];
+      const container = $('#chain-steps-container');
+      if (!container) return;
+
+      container.innerHTML = steps.length === 0
+        ? '<div class="empty">No team chain activity</div>'
+        : steps.map(s => `
+          <div class="chain-step">
+            <div class="chain-step-header">
+              <span class="chain-step-index">step ${s.step_index}</span>
+              <span class="chain-step-agent">${escapeHtml(s.agent_id)}</span>
+              <span class="text-muted" style="margin-left:auto">${fmtTime(s.created_at)}</span>
+            </div>
+            <div class="chain-step-input">${escapeHtml(truncate(s.input, 300))}</div>
+            <div class="chain-step-body">${escapeHtml(truncate(s.output, 500))}</div>
+          </div>`).join('');
+
+      container.scrollTop = container.scrollHeight;
+    } catch { /* ignore */ }
+  }
+
+  /* ── SSE ── */
+  function connectSSE() {
+    const dot = $('#sse-dot');
+    const label = $('#sse-label');
+
+    const url = apiUrl('/api/events/stream');
+    const source = new EventSource(url);
+
+    source.onopen = () => {
+      dot.className = 'status-dot ok';
+      label.textContent = 'Connected';
+    };
+
+    source.onerror = () => {
+      dot.className = 'status-dot error';
+      label.textContent = 'Disconnected';
+      source.close();
+      setTimeout(connectSSE, 3000);
+    };
+
+    source.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.event_type) {
+          const refreshPages = {
+            agent_created: 'agents', agent_updated: 'agents', agent_deleted: 'agents',
+            team_created: 'teams', team_updated: 'teams', team_deleted: 'teams',
+            settings_updated: 'settings',
+            sender_access_approved: 'access', sender_access_rejected: 'access',
+            manual_response_queued: 'responses',
+            run_succeeded: 'chatroom',
+          };
+          if (refreshPages[data.event_type] === currentPage) {
+            renderPage(currentPage);
+          }
+        }
+      } catch { /* ignore */ }
+    };
+  }
+
+  /* ── Theme ── */
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    const btn = $('#theme-toggle');
+    if (btn) btn.innerHTML = theme === 'dark' ? '&#9790;' : '&#9728;';
+  }
+
+  function initTheme() {
+    const saved = localStorage.getItem('clawpod-theme');
+    if (saved) {
+      applyTheme(saved);
+    } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+      applyTheme('light');
+    }
+  }
+
+  window.toggleTheme = function() {
+    const current = document.documentElement.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    localStorage.setItem('clawpod-theme', next);
+  };
+
+  /* ── Init ── */
+  initTheme();
+  navigate('dashboard');
+  connectSSE();
+})();
+</script>
+</body>
+</html>

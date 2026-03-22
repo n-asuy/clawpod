@@ -1,0 +1,10 @@
+[package]
+name = "routing"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+regex = "1.11"

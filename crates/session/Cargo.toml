@@ -1,0 +1,10 @@
+[package]
+name = "session"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+domain = { path = "../domain" }

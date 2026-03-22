@@ -1,0 +1,26 @@
+[package]
+name = "queue"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+agent = { path = "../agent" }
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+config = { path = "../config" }
+domain = { path = "../domain" }
+observer = { path = "../observer" }
+plugins = { path = "../plugins" }
+routing = { path = "../routing" }
+runner = { path = "../runner" }
+session = { path = "../session" }
+store = { path = "../store" }
+team = { path = "../team" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["fs", "rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1"
+regex = "1.11"
+uuid = { version = "1.10", features = ["v4", "serde"] }

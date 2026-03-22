@@ -1,0 +1,29 @@
+[daemon]
+home_dir = "./.clawpod-local"
+workspace_dir = "./.clawpod-local/workspace"
+poll_interval_ms = 250
+max_concurrent_runs = 2
+
+[queue]
+max_retries = 2
+backoff_base_ms = 250
+dead_letter_enabled = true
+
+[runner]
+default_provider = "mock"
+timeout_sec = 10
+
+[agents.default]
+name = "Default"
+provider = "mock"
+model = "mock-local"
+
+[agents.reviewer]
+name = "Reviewer"
+provider = "mock"
+model = "mock-local"
+
+[teams.dev]
+name = "Development"
+leader_agent = "default"
+agents = ["default", "reviewer"]
