@@ -278,6 +278,21 @@ async fn create_agent(
         Ok(())
     })
     .await?;
+
+    // Bootstrap workspace so SOUL.md / AGENTS.md are immediately available.
+    let config = state.config.read().await;
+    let agent_root = config.resolve_agent_workdir(&agent_id);
+    if let Err(e) = agent::ensure_agent_workspace(
+        &agent_id,
+        &payload.agent,
+        &config.agents,
+        &config.teams,
+        &agent_root,
+    ) {
+        tracing::warn!("failed to bootstrap workspace for {agent_id}: {e:#}");
+    }
+    drop(config);
+
     emit_server_event(&state, "agent_created", json!({ "agent_id": agent_id }));
     Ok(Json(json!({
         "ok": true,
