@@ -1,0 +1,11 @@
+/.clawpod-local/
+/target/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# OS noise
+.DS_Store
