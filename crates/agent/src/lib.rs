@@ -1,3 +1,4 @@
+pub mod memory;
 pub mod prompt;
 pub mod skills;
 
@@ -8,6 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use domain::{AgentConfig, TeamConfig};
 
+pub use memory::{MemorySection, load_memory_index};
 pub use prompt::{PromptContext, PromptSection, SystemPromptBuilder};
 pub use skills::{SkillEntry, SkillsSection};
 
@@ -130,6 +132,8 @@ pub fn ensure_agent_workspace(
         .with_context(|| format!("failed to create .clawpod dir: {}", root.display()))?;
     fs::create_dir_all(root.join(".clawpod").join("skills"))
         .with_context(|| format!("failed to create skills dir: {}", root.display()))?;
+    fs::create_dir_all(root.join(".clawpod").join("files"))
+        .with_context(|| format!("failed to create files dir: {}", root.display()))?;
 
     let agents_md = root.join("AGENTS.md");
     if !agents_md.exists() {
