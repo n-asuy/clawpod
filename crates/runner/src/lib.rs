@@ -53,10 +53,51 @@ impl Runner for CliRunner {
             command.env(key, value);
         }
 
-        let output = timeout(self.timeout, command.output())
-            .await
-            .map_err(|_| anyhow!("runner timed out after {}s", self.timeout.as_secs()))?
-            .with_context(|| format!("failed to execute runner command: {program}"))?;
+        let mut child = command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("failed to spawn runner command: {program}"))?;
+
+        let child_stdout = child.stdout.take();
+        let child_stderr = child.stderr.take();
+        let read_output = async {
+            let stdout = match child_stdout {
+                Some(mut s) => {
+                    let mut buf = Vec::new();
+                    tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf).await?;
+                    buf
+                }
+                None => Vec::new(),
+            };
+            let stderr = match child_stderr {
+                Some(mut s) => {
+                    let mut buf = Vec::new();
+                    tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf).await?;
+                    buf
+                }
+                None => Vec::new(),
+            };
+            let status = child.wait().await?;
+            Ok::<_, std::io::Error>(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            })
+        };
+
+        let output = match timeout(self.timeout, read_output).await {
+            Ok(result) => result
+                .with_context(|| format!("failed to execute runner command: {program}"))?,
+            Err(_) => {
+                let _ = child.kill().await;
+                return Err(anyhow!(
+                    "runner timed out after {}s",
+                    self.timeout.as_secs()
+                ));
+            }
+        };
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
