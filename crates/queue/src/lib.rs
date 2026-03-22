@@ -374,43 +374,80 @@ impl QueueProcessor {
 
         let prompt = augment_prompt_with_files(route.message, &event.files);
 
-        let outcome = match team_id.clone() {
-            Some(team_id) => {
-                self.run_team_task(
-                    task_id,
-                    &event.message_id,
-                    &session_key,
-                    &session_dir,
-                    &agent_id,
-                    &team_id,
-                    prompt,
-                    continue_session,
-                    incoming_hook.metadata.clone(),
-                )
-                .await
-            }
-            None => {
-                let metadata =
-                    self.build_run_metadata_for_agent(&agent_id, Some(&incoming_hook.metadata))?;
-                self.run_single_task(
-                    task_id,
-                    &event.message_id,
-                    &session_key,
-                    &session_dir,
-                    &agent_id,
-                    prompt,
-                    continue_session,
-                    metadata,
-                )
-                .await
-            }
-        };
+        let metadata =
+            self.build_run_metadata_for_agent(&agent_id, Some(&incoming_hook.metadata))?;
+        let outcome = self
+            .run_single_task(
+                task_id,
+                &event.message_id,
+                &session_key,
+                &session_dir,
+                &agent_id,
+                prompt,
+                continue_session,
+                metadata,
+            )
+            .await;
 
         match outcome {
             Ok(text) => {
+                // Extract teammate mentions and enqueue as separate messages (flat handoff)
+                if let Some(ref tid) = team_id {
+                    let handoffs = routing::extract_teammate_mentions(
+                        &text,
+                        &agent_id,
+                        tid,
+                        &self.config.teams,
+                        &self.config.agents,
+                    );
+                    for mention in &handoffs {
+                        info!(
+                            from = %agent_id,
+                            to = %mention.teammate_id,
+                            "handoff enqueued"
+                        );
+                        self.emit_event(
+                            "chain_handoff",
+                            json!({
+                                "team_id": tid,
+                                "from_agent": agent_id,
+                                "to_agent": mention.teammate_id,
+                            }),
+                        )
+                        .await?;
+
+                        let internal_msg = format!(
+                            "[Message from teammate @{}]:\n{}",
+                            agent_id, mention.message
+                        );
+                        enqueue_message(
+                            &self.config,
+                            EnqueueMessage {
+                                channel: event.channel.clone(),
+                                sender: event.sender.clone(),
+                                sender_id: event.sender_id.clone(),
+                                message: internal_msg,
+                                message_id: format!(
+                                    "internal-{}-{}",
+                                    Uuid::new_v4().simple(),
+                                    mention.teammate_id
+                                ),
+                                timestamp_ms: Utc::now().timestamp_millis(),
+                                chat_type: event.chat_type,
+                                peer_id: event.peer_id.clone(),
+                                account_id: event.account_id.clone(),
+                                pre_routed_agent: Some(mention.teammate_id.clone()),
+                                files: vec![],
+                            },
+                        )
+                        .await?;
+                    }
+                }
+
+                let display_text = convert_mentions_to_readable(&text, &agent_id);
                 let prepared = self
                     .prepare_outbound_payload(
-                        &text,
+                        &display_text,
                         &session_dir,
                         &HookContext {
                             channel: event.channel.clone(),
@@ -1116,6 +1153,18 @@ fn resolve_output_file(working_directory: &Path, raw: &str) -> PathBuf {
 fn strip_chatroom_tags(response: &str) -> String {
     let tag_re = Regex::new(r"\[#(\S+?):\s*([\s\S]*?)\]").expect("valid regex");
     tag_re.replace_all(response, "").trim().to_string()
+}
+
+/// Convert `[@teammate: message]` tags to readable `@from → @to: message` format.
+fn convert_mentions_to_readable(response: &str, from_agent: &str) -> String {
+    let tag_re = Regex::new(r"\[@(\S+?):\s*([\s\S]*?)\]").expect("valid regex");
+    tag_re
+        .replace_all(response, |caps: &regex::Captures| {
+            let to = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let msg = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+            format!("@{from_agent} → @{to}: {msg}")
+        })
+        .to_string()
 }
 
 fn provider_from_metadata(metadata: &HashMap<String, String>) -> Option<ProviderKind> {
