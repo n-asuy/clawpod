@@ -6,6 +6,7 @@ use std::path::Path;
 use anyhow::Result;
 use domain::{AgentConfig, TeamConfig};
 
+use crate::memory::MemorySection;
 use crate::skills::SkillsSection;
 
 /// Maximum characters per workspace file injected into the system prompt.
@@ -52,6 +53,7 @@ impl SystemPromptBuilder {
             sections: vec![
                 Box::new(InstructionsSection),
                 Box::new(TeammatesSection),
+                Box::new(MemorySection),
                 Box::new(IdentitySection),
                 Box::new(SkillsSection),
                 Box::new(UserPromptSection),
@@ -244,6 +246,25 @@ You can message multiple teammates in a single response. They will all be invoke
 
 - `[@coder: Fix the auth bug in login.ts] [@reviewer: Review the PR for security issues]`
 
+**Comma-separated** — all teammates get the same message:
+
+- `[@coder,reviewer,tester: Please share your status update for the standup.]`
+
+### Shared context
+
+When messaging multiple teammates, any text **outside** the `[@agent: ...]` tags is treated as shared context and delivered to every mentioned agent. Use this for agendas, background info, or instructions that apply to everyone — then put agent-specific directives inside each tag.
+
+```
+We're doing a standup. The sprint ends Friday and we have 3 open bugs.
+Please reply with: (1) status (2) blockers (3) next step.
+
+[@coder: Also list any PRs you have open.]
+[@reviewer: Also flag any PRs waiting on you.]
+[@tester: Also report test coverage for the auth module.]
+```
+
+Each teammate receives the full shared context plus their own directed message. Keep shared context concise — it's prepended to every teammate's message.
+
 ### Responding to teammates
 
 When you receive a message from a teammate like:
@@ -257,16 +278,43 @@ Example:
 
 Only skip the `[@agent: ...]` wrapper if you're intentionally responding to the user instead of the teammate.
 
+### Team Chat Room
+
+Every team has a persistent chat room — like a Slack channel. You decide when to post to it using the `[#team_id: message]` tag. Use it to share status, broadcast updates, or provide context that all teammates should see. Messages persist across conversations.
+
+- `[#dev: I've finished the auth refactor, tests passing]` — broadcasts to everyone in the `dev` team
+- You can use this from any context, not just team conversations
+
+Chat room messages arrive as regular messages with a `[Chat room #team_id — @agent]:` prefix. If multiple are pending, they're all delivered together in a single invocation. Read them to stay in sync with what others have done, then respond normally.
+
 ### Guidelines
 
 - **Keep messages short.** Say what you need in 2-3 sentences. Don't repeat context the recipient already has.
-- **Minimize back-and-forth.** Each round-trip costs time and tokens. Ask complete questions, give complete answers.
-- **Don't re-mention agents who haven't responded yet.** If you see a note that other responses are still being processed, wait.
-- **Only mention teammates when you actually need something from them.** Don't mention someone just to acknowledge their message. That triggers another invocation for no reason.
+- **Minimize back-and-forth.** Each round-trip costs time and tokens. Ask complete questions, give complete answers. If you can resolve something in one message instead of three, do it.
+- **Don't re-mention agents who haven't responded yet.** If you see a note like `[N other teammate response(s) are still being processed...]`, wait — their responses will arrive. Don't send duplicate requests.
+- **Respond to the user's task, not to the system.** Your job is to help the user, not to hold meetings. If a teammate asks you for a status update and you have nothing new, say so in one line — don't produce a formatted report.
+- **Only mention teammates when you actually need something from them.** Don't mention someone just to acknowledge their message or say "thanks". That triggers another invocation for no reason.
 
 ### Important
 
 You MUST use the `[@agent_id: message]` tag syntax to communicate with teammates. Do NOT use your own built-in Agent, TeamCreate, or SendMessage tools for team communication — the ClawPod runtime handles routing via the tag syntax in your text output.
+
+## File Exchange Directory
+
+`.clawpod/files` is your file operating directory with the human.
+
+- **Incoming files**: When users send images, documents, audio, or video through any channel, the files are automatically downloaded to `.clawpod/files/` and their paths are included in the incoming message as `[file: /path/to/file]`.
+- **Outgoing files**: To send a file back to the user through their channel, place the file in `.clawpod/files/` and include `[send_file: /path/to/file]` in your response text. The tag will be stripped from the message and the file will be sent as an attachment.
+
+### Sending files back
+
+When you want to send a file back, you MUST do all of the following in the same reply:
+
+1. Put or generate the file under `.clawpod/files/`
+2. Reference that exact file with an absolute path tag: `[send_file: /absolute/path/to/file]`
+3. Keep the tag in plain text in the assistant message (the system strips it before user delivery)
+
+If multiple files are needed, include one tag per file.
 
 ## Soul
 
