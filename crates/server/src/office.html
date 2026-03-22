@@ -520,8 +520,24 @@ tr:hover td { background: var(--bg-hover); }
 .theme-toggle:hover { color: var(--text); border-color: var(--text-dim); }
 
 /* Responsive */
+.menu-toggle {
+  display: none;
+  background: none; border: none; color: var(--text); font-size: 22px;
+  cursor: pointer; padding: 4px 8px; margin-right: 8px; line-height: 1;
+}
+.sidebar-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 99;
+}
+.sidebar-overlay.open { display: block; }
+
 @media (max-width: 768px) {
-  .sidebar { display: none; }
+  .menu-toggle { display: inline-block; }
+  .sidebar {
+    position: fixed; left: -260px; top: 0; bottom: 0; z-index: 100;
+    width: 250px; min-width: 250px;
+    transition: left .2s ease;
+  }
+  .sidebar.open { left: 0; }
   .grid-4 { grid-template-columns: repeat(2, 1fr); }
 }
 </style>
@@ -582,9 +598,12 @@ tr:hover td { background: var(--bg-hover); }
     </div>
   </aside>
 
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
+
   <!-- Main -->
   <div class="main">
     <div class="main-header">
+      <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Menu">&#9776;</button>
       <span class="page-title" id="page-title">Dashboard</span>
       <div id="header-actions"></div>
     </div>
@@ -722,6 +741,7 @@ tr:hover td { background: var(--bg-hover); }
   window.navigate = function(page, pushState = true) {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     currentPage = page;
+    if (typeof closeSidebar === 'function') closeSidebar();
     if (pushState) {
       const url = '/office/' + page;
       history.pushState({ page }, '', url);
@@ -1482,6 +1502,16 @@ tr:hover td { background: var(--bg-hover); }
     const next = current === 'dark' ? 'light' : 'dark';
     applyTheme(next);
     localStorage.setItem('clawpod-theme', next);
+  };
+
+  /* ── Mobile sidebar ── */
+  window.toggleSidebar = function() {
+    $('.sidebar').classList.toggle('open');
+    $('#sidebar-overlay').classList.toggle('open');
+  };
+  window.closeSidebar = function() {
+    $('.sidebar').classList.remove('open');
+    $('#sidebar-overlay').classList.remove('open');
   };
 
   /* ── Init ── */
