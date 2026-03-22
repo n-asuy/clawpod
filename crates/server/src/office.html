@@ -820,13 +820,11 @@ tr:hover td { background: var(--bg-hover); }
   }
 
   async function renderDashboard(el) {
-    const [health, queue, agents, teams, doctor] = await Promise.all([
-      GET('/health'),
-      GET('/api/queue/status'),
-      GET('/api/agents'),
-      GET('/api/teams'),
-      GET('/api/doctor').catch(() => null),
-    ]);
+    const health = await GET('/health');
+    const queue = await GET('/api/queue/status');
+    const agents = await GET('/api/agents');
+    const teams = await GET('/api/teams');
+    const doctor = await GET('/api/doctor').catch(() => null);
 
     const components = health.components || {};
     const agentCount = Object.keys(agents.agents || {}).length;
