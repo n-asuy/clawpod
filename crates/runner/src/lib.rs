@@ -122,6 +122,12 @@ fn build_claude_command(request: &RunRequest) -> (String, Vec<String>) {
         args.push("--effort".to_string());
         args.push(effort.to_string());
     }
+    if let Some(system_prompt) = request.metadata.get("system_preamble") {
+        if !system_prompt.trim().is_empty() {
+            args.push("--system-prompt".to_string());
+            args.push(system_prompt.clone());
+        }
+    }
     if request.continue_session {
         args.push("-c".to_string());
     }

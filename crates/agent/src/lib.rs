@@ -10,8 +10,57 @@ const SOUL_TEMPLATE: &str = r#"# Soul
 You are an operational ClawPod agent.
 
 - Stay within your role.
-- Handoff to teammates with `[@agent_id: message]`.
 - Keep responses concise unless the user asks for depth.
+"#;
+
+const BUILTIN_AGENT_INSTRUCTIONS: &str = r#"ClawPod - Multi-agent Runtime
+
+Running in persistent mode with teams of agents and messaging channel integration.
+
+## Team Communication
+
+You may be part of a team with other agents. To message a teammate, use the tag format `[@agent_id: message]` in your response.
+
+If you decide to send a message, message cannot be empty, `[@agent_id]` is not allowed.
+
+### Single teammate
+
+- `[@coder: Can you fix the login bug?]` — routes your message to the `coder` agent
+
+### Multiple teammates (parallel fan-out)
+
+You can message multiple teammates in a single response. They will all be invoked in parallel.
+
+**Separate tags** — each teammate gets a different message:
+
+- `[@coder: Fix the auth bug in login.ts] [@reviewer: Review the PR for security issues]`
+
+### Responding to teammates
+
+When you receive a message from a teammate like:
+> [Message from teammate @sam — respond using [@sam: your reply]]:
+
+You MUST wrap your response in `[@sam: your response here]` so it routes back to them. If you don't, your response goes directly to the user and the requesting agent never sees it.
+
+Example:
+- Teammate asks: `[Message from teammate @sam]: What is 2+2?`
+- Your response: `[@sam: 2 + 2 = 4]`
+
+Only skip the `[@agent: ...]` wrapper if you're intentionally responding to the user instead of the teammate.
+
+### Guidelines
+
+- **Keep messages short.** Say what you need in 2-3 sentences. Don't repeat context the recipient already has.
+- **Minimize back-and-forth.** Each round-trip costs time and tokens. Ask complete questions, give complete answers.
+- **Don't re-mention agents who haven't responded yet.** If you see a note that other responses are still being processed, wait.
+- **Only mention teammates when you actually need something from them.** Don't mention someone just to acknowledge their message. That triggers another invocation for no reason.
+
+### Important
+
+You MUST use the `[@agent_id: message]` tag syntax to communicate with teammates. Do NOT use your own built-in Agent, TeamCreate, or SendMessage tools for team communication — the ClawPod runtime handles routing via the tag syntax in your text output.
+
+<!-- TEAMMATES_START -->
+<!-- TEAMMATES_END -->
 "#;
 
 const HEARTBEAT_TEMPLATE: &str = r#"# Heartbeat
@@ -111,48 +160,85 @@ pub fn clear_reset_flag(agent_root: &Path) -> Result<bool> {
 fn render_agents_md(
     agent_id: &str,
     agent: &AgentConfig,
+    _agents: &HashMap<String, AgentConfig>,
+    _teams: &HashMap<String, TeamConfig>,
+) -> String {
+    format!(
+        "# Agent Workspace\n\nYou are `@{agent_id}` ({})\n",
+        agent.name
+    )
+}
+
+/// Build the full system prompt for an agent invocation.
+/// Combines built-in instructions + teammate info + user's custom system_prompt.
+pub fn build_system_prompt(
+    agent_id: &str,
     agents: &HashMap<String, AgentConfig>,
     teams: &HashMap<String, TeamConfig>,
+    config_system_prompt: Option<&str>,
 ) -> String {
-    let mut lines = vec![
-        "# Agent Workspace".to_string(),
-        String::new(),
-        format!("You are `@{agent_id}` ({})", agent.name),
-        String::new(),
-        "## Teammates".to_string(),
-        String::new(),
-    ];
+    let mut prompt = BUILTIN_AGENT_INSTRUCTIONS.to_string();
+
+    // Build teammate block
+    let start_marker = "<!-- TEAMMATES_START -->";
+    let end_marker = "<!-- TEAMMATES_END -->";
 
     let mut teammates = vec![];
     for team in teams.values() {
         if !team.agents.iter().any(|member| member == agent_id) {
             continue;
         }
-
-        for teammate_id in &team.agents {
-            if teammate_id == agent_id {
+        for tid in &team.agents {
+            if tid == agent_id {
                 continue;
             }
-            if let Some(teammate) = agents.get(teammate_id) {
-                teammates.push(format!(
-                    "- `@{}`: {} ({})",
-                    teammate_id, teammate.name, teammate.model
-                ));
+            if let Some(agent) = agents.get(tid) {
+                let entry = format!("- `@{}` — **{}** ({})", tid, agent.name, agent.model);
+                if !teammates.contains(&entry) {
+                    teammates.push(entry);
+                }
             }
         }
     }
 
-    if teammates.is_empty() {
-        lines.push("- none".to_string());
-    } else {
+    let mut block = String::new();
+    if let Some(self_agent) = agents.get(agent_id) {
+        block.push_str(&format!(
+            "\n### You\n\n- `@{}` — **{}** ({})\n",
+            agent_id, self_agent.name, self_agent.model
+        ));
+    }
+    if !teammates.is_empty() {
+        block.push_str("\n### Your Teammates\n\n");
         teammates.sort();
-        teammates.dedup();
-        lines.extend(teammates);
+        for t in &teammates {
+            block.push_str(t);
+            block.push('\n');
+        }
     }
 
-    lines.push(String::new());
-    lines.push("Use `[@agent_id: message]` to hand off work.".to_string());
-    lines.join("\n")
+    // Inject teammate block
+    if let (Some(start_idx), Some(end_idx)) =
+        (prompt.find(start_marker), prompt.find(end_marker))
+    {
+        prompt = format!(
+            "{}{}{}",
+            &prompt[..start_idx + start_marker.len()],
+            block,
+            &prompt[end_idx..],
+        );
+    }
+
+    // Append user's config system prompt
+    if let Some(sp) = config_system_prompt {
+        let sp = sp.trim();
+        if !sp.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(sp);
+        }
+    }
+
+    prompt
 }
 
 fn slugify(value: &str) -> String {
