@@ -2,10 +2,6 @@
 
 Persistent multi-agent runtime daemon for business operations. Receives messages from Slack, Telegram, and Discord, routes them to AI agent teams, and returns responses — all from a single Rust binary running on a VPS.
 
-```
-ClawPod = ZeroClaw ops + TinyClaw team UX + Anthropic harness design
-```
-
 ## Architecture
 
 ```
