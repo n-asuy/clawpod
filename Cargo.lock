@@ -15,6 +15,7 @@ dependencies = [
  "anyhow",
  "domain",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

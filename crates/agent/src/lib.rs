@@ -1,9 +1,21 @@
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use domain::{AgentConfig, TeamConfig};
+
+/// Maximum characters per workspace file injected into the system prompt.
+/// Matches zeroclaw's budget to prevent prompt bloat.
+const BOOTSTRAP_MAX_CHARS: usize = 20_000;
+
+/// Workspace files to inject into the system prompt, in order.
+/// Each entry is (subdirectory relative to agent_root, filename).
+const WORKSPACE_FILES: &[(&str, &str)] = &[
+    (".clawpod", "SOUL.md"),
+    ("", "AGENTS.md"),
+];
 
 const SOUL_TEMPLATE: &str = r#"# [Your Name]
 
@@ -266,11 +278,17 @@ fn render_agents_md(
 }
 
 /// Build the full system prompt for an agent invocation.
-/// Combines built-in instructions + teammate info + user's custom system_prompt.
+///
+/// Layout (top → bottom, highest priority last):
+/// 1. Built-in instructions (team comms, soul guidance)
+/// 2. Teammate roster (injected inline)
+/// 3. Workspace context — SOUL.md, AGENTS.md read from `agent_root`
+/// 4. User's custom `system_prompt` / `prompt_file`
 pub fn build_system_prompt(
     agent_id: &str,
     agents: &HashMap<String, AgentConfig>,
     teams: &HashMap<String, TeamConfig>,
+    agent_root: Option<&Path>,
     config_system_prompt: Option<&str>,
 ) -> String {
     let mut prompt = BUILTIN_AGENT_INSTRUCTIONS.to_string();
@@ -325,6 +343,15 @@ pub fn build_system_prompt(
         );
     }
 
+    // Inject workspace bootstrap files (SOUL.md, AGENTS.md, etc.)
+    if let Some(root) = agent_root {
+        let ws_context = inject_workspace_context(root);
+        if !ws_context.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(ws_context.trim_end());
+        }
+    }
+
     // Append user's config system prompt
     if let Some(sp) = config_system_prompt {
         let sp = sp.trim();
@@ -335,6 +362,62 @@ pub fn build_system_prompt(
     }
 
     prompt
+}
+
+/// Build the "## Workspace Context" section by reading workspace bootstrap files.
+///
+/// Each file is read from `agent_root`, truncated at [`BOOTSTRAP_MAX_CHARS`],
+/// and rendered as a `### filename` subsection. Missing or empty files are
+/// silently skipped — ClawPod creates these files at workspace init, so their
+/// absence simply means the user deleted them intentionally.
+fn inject_workspace_context(agent_root: &Path) -> String {
+    let mut section = String::new();
+    for &(subdir, filename) in WORKSPACE_FILES {
+        let path = if subdir.is_empty() {
+            agent_root.join(filename)
+        } else {
+            agent_root.join(subdir).join(filename)
+        };
+        inject_workspace_file(&mut section, &path, filename);
+    }
+    if section.is_empty() {
+        return section;
+    }
+    let mut out = String::from("## Workspace Context\n\n");
+    out.push_str(&section);
+    out
+}
+
+/// Read a single workspace file and append it as a `### filename` block.
+///
+/// - Empty files and read errors are silently skipped.
+/// - Content is truncated at [`BOOTSTRAP_MAX_CHARS`] with a notice appended.
+fn inject_workspace_file(prompt: &mut String, path: &Path, display_name: &str) {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let _ = writeln!(prompt, "### {display_name}\n");
+    let char_count = trimmed.chars().count();
+    if char_count > BOOTSTRAP_MAX_CHARS {
+        let truncated = trimmed
+            .char_indices()
+            .nth(BOOTSTRAP_MAX_CHARS)
+            .map(|(idx, _)| &trimmed[..idx])
+            .unwrap_or(trimmed);
+        prompt.push_str(truncated);
+        let _ = writeln!(
+            prompt,
+            "\n\n[... truncated at {BOOTSTRAP_MAX_CHARS} chars]\n"
+        );
+    } else {
+        prompt.push_str(trimmed);
+        prompt.push_str("\n\n");
+    }
 }
 
 fn slugify(value: &str) -> String {
@@ -411,4 +494,184 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Helper: create a temp workspace with optional SOUL.md and AGENTS.md content.
+    fn make_workspace(
+        soul: Option<&str>,
+        agents_md: Option<&str>,
+    ) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let root = dir.path();
+        fs::create_dir_all(root.join(".clawpod")).unwrap();
+        if let Some(content) = soul {
+            fs::write(root.join(".clawpod").join("SOUL.md"), content).unwrap();
+        }
+        if let Some(content) = agents_md {
+            fs::write(root.join("AGENTS.md"), content).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn inject_workspace_file_reads_and_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("TEST.md");
+        fs::write(&path, "  Hello world  ").unwrap();
+
+        let mut buf = String::new();
+        inject_workspace_file(&mut buf, &path, "TEST.md");
+
+        assert!(buf.contains("### TEST.md"));
+        assert!(buf.contains("Hello world"));
+        // Content should be trimmed
+        assert!(!buf.contains("  Hello world  "));
+    }
+
+    #[test]
+    fn inject_workspace_file_skips_missing() {
+        let mut buf = String::new();
+        inject_workspace_file(&mut buf, Path::new("/nonexistent/file.md"), "file.md");
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn inject_workspace_file_skips_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("EMPTY.md");
+        fs::write(&path, "   \n\n  ").unwrap();
+
+        let mut buf = String::new();
+        inject_workspace_file(&mut buf, &path, "EMPTY.md");
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn inject_workspace_file_truncates_large_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("BIG.md");
+        // Create content exceeding BOOTSTRAP_MAX_CHARS
+        let content: String = "x".repeat(BOOTSTRAP_MAX_CHARS + 500);
+        fs::write(&path, &content).unwrap();
+
+        let mut buf = String::new();
+        inject_workspace_file(&mut buf, &path, "BIG.md");
+
+        assert!(buf.contains("### BIG.md"));
+        assert!(buf.contains("[... truncated at 20000 chars]"));
+        // Should not contain the full content
+        assert!(buf.len() < content.len());
+    }
+
+    #[test]
+    fn inject_workspace_file_truncates_multibyte_at_char_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("MULTI.md");
+        // Each Japanese char is 3 bytes in UTF-8
+        let content: String = "あ".repeat(BOOTSTRAP_MAX_CHARS + 100);
+        fs::write(&path, &content).unwrap();
+
+        let mut buf = String::new();
+        inject_workspace_file(&mut buf, &path, "MULTI.md");
+
+        assert!(buf.contains("[... truncated at 20000 chars]"));
+        // Verify we didn't panic or corrupt UTF-8
+        assert!(buf.is_char_boundary(buf.len()));
+    }
+
+    #[test]
+    fn inject_workspace_context_combines_files() {
+        let ws = make_workspace(
+            Some("# TestBot\nI am a test bot."),
+            Some("# Agent Workspace\nYou are @test"),
+        );
+
+        let section = inject_workspace_context(ws.path());
+
+        assert!(section.starts_with("## Workspace Context"));
+        assert!(section.contains("### SOUL.md"));
+        assert!(section.contains("I am a test bot."));
+        assert!(section.contains("### AGENTS.md"));
+        assert!(section.contains("You are @test"));
+    }
+
+    #[test]
+    fn inject_workspace_context_empty_when_no_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".clawpod")).unwrap();
+
+        let section = inject_workspace_context(dir.path());
+        assert!(section.is_empty());
+    }
+
+    #[test]
+    fn inject_workspace_context_partial_files() {
+        let ws = make_workspace(Some("# Soul content"), None);
+
+        let section = inject_workspace_context(ws.path());
+
+        assert!(section.contains("### SOUL.md"));
+        assert!(section.contains("# Soul content"));
+        assert!(!section.contains("### AGENTS.md"));
+    }
+
+    #[test]
+    fn build_system_prompt_injects_workspace_context() {
+        let ws = make_workspace(
+            Some("# TestBot\nI have strong opinions about testing."),
+            None,
+        );
+
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let prompt = build_system_prompt("test", &agents, &teams, Some(ws.path()), None);
+
+        assert!(prompt.contains("## Workspace Context"));
+        assert!(prompt.contains("### SOUL.md"));
+        assert!(prompt.contains("I have strong opinions about testing."));
+    }
+
+    #[test]
+    fn build_system_prompt_works_without_agent_root() {
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let prompt = build_system_prompt("test", &agents, &teams, None, Some("Custom instructions"));
+
+        assert!(prompt.contains("ClawPod"));
+        assert!(prompt.contains("Custom instructions"));
+        assert!(!prompt.contains("## Workspace Context"));
+    }
+
+    #[test]
+    fn build_system_prompt_ordering() {
+        let ws = make_workspace(Some("# Soul"), None);
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let prompt = build_system_prompt(
+            "test",
+            &agents,
+            &teams,
+            Some(ws.path()),
+            Some("User custom prompt"),
+        );
+
+        let builtin_pos = prompt.find("ClawPod").unwrap();
+        let ws_context_pos = prompt.find("## Workspace Context").unwrap();
+        let user_pos = prompt.find("User custom prompt").unwrap();
+
+        // Verify ordering: builtin < workspace context < user prompt
+        assert!(
+            builtin_pos < ws_context_pos,
+            "builtin instructions should come before workspace context"
+        );
+        assert!(
+            ws_context_pos < user_pos,
+            "workspace context should come before user prompt"
+        );
+    }
 }

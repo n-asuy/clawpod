@@ -867,11 +867,13 @@ impl QueueProcessor {
             Some(user_sections.join("\n\n"))
         };
 
-        // Build full system prompt: builtin instructions + teammate info + user prompt
+        // Build full system prompt: builtin instructions + teammate info + workspace context + user prompt
+        let agent_root = self.config.resolve_agent_workdir(agent_id);
         let full = build_system_prompt(
             agent_id,
             &self.config.agents,
             &self.config.teams,
+            Some(agent_root.as_path()),
             user_prompt.as_deref(),
         );
 
