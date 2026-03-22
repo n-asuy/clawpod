@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent::{clear_reset_flag, ensure_agent_workspace, ensure_session_workspace};
+use agent::{build_system_prompt, clear_reset_flag, ensure_agent_workspace, ensure_session_workspace};
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use config::{CustomProviderConfig, RuntimeConfig};
@@ -889,10 +889,11 @@ impl QueueProcessor {
     }
 
     fn load_system_preamble(&self, agent_id: &str, agent: &AgentConfig) -> Result<Option<String>> {
-        let mut sections = vec![];
+        // Collect user-provided prompt sections (system_prompt + prompt_file)
+        let mut user_sections = vec![];
         if let Some(system_prompt) = &agent.system_prompt {
             if !system_prompt.trim().is_empty() {
-                sections.push(system_prompt.trim().to_string());
+                user_sections.push(system_prompt.trim().to_string());
             }
         }
 
@@ -907,15 +908,25 @@ impl QueueProcessor {
                 format!("failed to read prompt file: {}", prompt_path.display())
             })?;
             if !content.trim().is_empty() {
-                sections.push(content.trim().to_string());
+                user_sections.push(content.trim().to_string());
             }
         }
 
-        if sections.is_empty() {
-            Ok(None)
+        let user_prompt = if user_sections.is_empty() {
+            None
         } else {
-            Ok(Some(sections.join("\n\n")))
-        }
+            Some(user_sections.join("\n\n"))
+        };
+
+        // Build full system prompt: builtin instructions + teammate info + user prompt
+        let full = build_system_prompt(
+            agent_id,
+            &self.config.agents,
+            &self.config.teams,
+            user_prompt.as_deref(),
+        );
+
+        Ok(Some(full))
     }
 
     async fn emit_event(&self, event_type: &str, payload: Value) -> Result<()> {

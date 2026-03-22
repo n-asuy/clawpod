@@ -146,10 +146,7 @@ pub async fn execute_team_chain(
                             .get(&mention.teammate_id)
                             .cloned()
                             .expect("session workdir must be pre-resolved for all agents"),
-                        prompt: apply_system_preamble(
-                            &format!("[Message from teammate @{sender}]:\n{}", mention.message),
-                            &metadata,
-                        ),
+                        prompt: format!("[Message from teammate @{sender}]:\n{}", mention.message),
                         continue_session: true,
                         metadata,
                     };
@@ -229,18 +226,9 @@ fn build_run_request(
             .get(agent_id)
             .cloned()
             .expect("session workdir must be pre-resolved for all agents"),
-        prompt: apply_system_preamble(prompt, &metadata),
+        prompt: prompt.to_string(),
         continue_session,
         metadata,
-    }
-}
-
-fn apply_system_preamble(prompt: &str, metadata: &HashMap<String, String>) -> String {
-    match metadata.get("system_preamble").map(String::as_str) {
-        Some(preamble) if !preamble.trim().is_empty() => {
-            format!("{preamble}\n\nUser request:\n{prompt}")
-        }
-        _ => prompt.to_string(),
     }
 }
 
