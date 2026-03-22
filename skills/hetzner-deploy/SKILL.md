@@ -268,14 +268,19 @@ Authenticate with AI providers. Ask user which provider(s) they want to use.
 
 #### OpenAI (via Codex CLI)
 
-This is an interactive command. The user must run it directly via SSH or the agent must inform the user to do so:
+`clawpod auth openai` delegates to `codex` CLI for OAuth login. The default mode requires a local browser callback, which fails on headless servers. Use `codex login --device-auth` instead:
 
 ```bash
-ssh root@<ip>
-clawpod auth openai
+ssh root@<ip> "codex login --device-auth"
 ```
 
-> **Important**: `clawpod auth openai` delegates to `codex` CLI for OAuth login. It requires an interactive terminal and will output a URL for browser-based authentication. This cannot be run non-interactively.
+This outputs:
+1. A URL (`https://auth.openai.com/codex/device`)
+2. A one-time code (expires in 15 minutes)
+
+Present both to the user. The user opens the URL in their browser, signs in, and enters the code. The command completes once authenticated.
+
+> **Note**: The previous code expires when a new `codex login --device-auth` is invoked. Do not retry rapidly.
 
 #### Anthropic
 
