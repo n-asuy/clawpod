@@ -145,7 +145,9 @@ ssh -o StrictHostKeyChecking=no root@<ip> "\
   echo '=== Rust ===' && (rustc --version 2>/dev/null || echo 'not installed') && \
   echo '=== Cargo ===' && (cargo --version 2>/dev/null || echo 'not installed') && \
   echo '=== Tailscale ===' && (tailscale version 2>/dev/null || echo 'not installed') && \
-  echo '=== ClawPod binary ===' && (clawpod --version 2>/dev/null || echo 'not installed') && \
+  echo '=== Node.js ===' && (node --version 2>/dev/null || echo 'not installed') && \
+  echo '=== Codex CLI ===' && (npx codex --version 2>/dev/null || echo 'not installed') && \
+  echo '=== ClawPod binary ===' && (which clawpod 2>/dev/null || echo 'not installed') && \
   echo '=== ClawPod service ===' && (systemctl is-active clawpod 2>/dev/null || echo 'not active') && \
   echo '=== ClawPod config ===' && (test -f /root/.clawpod/clawpod.toml && echo 'exists' || echo 'not found')"
 ```
@@ -196,26 +198,40 @@ ssh root@<ip> "tailscale up"
 ssh root@<ip> "tailscale ip -4"
 ```
 
+#### Install Node.js and Codex CLI
+
+`clawpod auth openai` requires the Codex CLI (`@openai/codex`), which requires Node.js.
+
+```bash
+ssh root@<ip> "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+  apt-get install -y nodejs && \
+  npm install -g @openai/codex"
+```
+
+Timeout: 120s.
+
 #### Clone and build
 
 ```bash
 ssh root@<ip> "source /root/.cargo/env && \
   git clone <repo-url> /opt/clawpod-src && \
-  cd /opt/clawpod-src/experiments/clawpod && \
+  cd /opt/clawpod-src && \
   cargo build --release -p runtime"
 ```
 
 Timeout: 600s. Release build with `opt-level = "z"` and LTO takes time.
 
-> **Important**: Ask user for the repository URL. If private, SSH key or token-based clone is needed.
+> **Important**: Ask user for the repository URL. The clawpod repo root IS the project root (not under `experiments/`). If private, SSH key or token-based clone is needed.
 
 #### Install binary
 
 ```bash
-ssh root@<ip> "cp /opt/clawpod-src/experiments/clawpod/target/release/runtime /usr/local/bin/clawpod && \
+ssh root@<ip> "cp /opt/clawpod-src/target/release/clawpod /usr/local/bin/clawpod && \
   chmod +x /usr/local/bin/clawpod && \
-  clawpod --version"
+  clawpod --help"
 ```
+
+> **Note**: `clawpod --version` is not implemented. Use `clawpod --help` to verify the binary works.
 
 Continue to Step 5.
 
@@ -224,9 +240,8 @@ Continue to Step 5.
 ```bash
 ssh root@<ip> "source /root/.cargo/env && \
   cd /opt/clawpod-src && git pull && \
-  cd experiments/clawpod && \
   cargo build --release -p runtime && \
-  cp target/release/runtime /usr/local/bin/clawpod"
+  cp target/release/clawpod /usr/local/bin/clawpod"
 ```
 
 If `/opt/clawpod-src` does not exist, fall back to Step 4A clone step.
@@ -238,21 +253,46 @@ Timeout: 600s.
 ```bash
 ssh root@<ip> "source /root/.cargo/env && \
   cd /opt/clawpod-src && git pull && \
-  cd experiments/clawpod && cargo build --release -p runtime && \
+  cargo build --release -p runtime && \
   systemctl stop clawpod 2>/dev/null; true && \
-  cp target/release/runtime /usr/local/bin/clawpod && \
+  cp target/release/clawpod /usr/local/bin/clawpod && \
   systemctl start clawpod 2>/dev/null; true && \
-  clawpod --version"
+  clawpod --help | head -1"
 ```
 
 Timeout: 600s.
+
+### Step 4D: Provider Authentication
+
+Authenticate with AI providers. Ask user which provider(s) they want to use.
+
+#### OpenAI (via Codex CLI)
+
+This is an interactive command. The user must run it directly via SSH or the agent must inform the user to do so:
+
+```bash
+ssh root@<ip>
+clawpod auth openai
+```
+
+> **Important**: `clawpod auth openai` delegates to `codex` CLI for OAuth login. It requires an interactive terminal and will output a URL for browser-based authentication. This cannot be run non-interactively.
+
+#### Anthropic
+
+Set `ANTHROPIC_API_KEY` in the env file (Step 6).
+
+#### Check auth status
+
+```bash
+ssh root@<ip> "clawpod auth status"
+```
 
 ### Step 5: Initial Configuration
 
 Create minimal `clawpod.toml` if not exists. Ask user for:
 
 - Slack/Discord/Telegram tokens (optional)
-- AI provider API keys (anthropic/openai)
+- AI provider preference (openai/anthropic) — auth is handled in Step 4D
 - Agent names and roles
 
 ```bash
@@ -421,11 +461,11 @@ For subsequent updates after initial deployment:
 ```bash
 ssh root@<ip> "source /root/.cargo/env && \
   cd /opt/clawpod-src && git pull && \
-  cd experiments/clawpod && cargo build --release -p runtime && \
+  cargo build --release -p runtime && \
   systemctl stop clawpod && \
-  cp target/release/runtime /usr/local/bin/clawpod && \
+  cp target/release/clawpod /usr/local/bin/clawpod && \
   systemctl start clawpod && \
-  clawpod --version && systemctl status clawpod --no-pager"
+  clawpod --help | head -1 && systemctl status clawpod --no-pager"
 ```
 
 ## Troubleshooting
