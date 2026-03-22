@@ -87,17 +87,10 @@ impl Runner for CliRunner {
             })
         };
 
-        let output = match timeout(self.timeout, read_output).await {
-            Ok(result) => result
-                .with_context(|| format!("failed to execute runner command: {program}"))?,
-            Err(_) => {
-                let _ = child.kill().await;
-                return Err(anyhow!(
-                    "runner timed out after {}s",
-                    self.timeout.as_secs()
-                ));
-            }
-        };
+        let output = timeout(self.timeout, read_output)
+            .await
+            .map_err(|_| anyhow!("runner timed out after {}s", self.timeout.as_secs()))?
+            .with_context(|| format!("failed to execute runner command: {program}"))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();

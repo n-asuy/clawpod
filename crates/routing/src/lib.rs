@@ -234,6 +234,7 @@ mod tests {
                     provider_id: None,
                     system_prompt: None,
                     prompt_file: None,
+                    think_level: None,
                 },
             ),
             (
@@ -245,6 +246,7 @@ mod tests {
                     provider_id: None,
                     system_prompt: None,
                     prompt_file: None,
+                    think_level: None,
                 },
             ),
         ])
