@@ -1625,7 +1625,6 @@ dependencies = [
  "serde_json",
  "session",
  "store",
- "team",
  "tokio",
  "tracing",
  "uuid",

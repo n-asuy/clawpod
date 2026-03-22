@@ -207,19 +207,6 @@ pub fn extract_teammate_mentions(
     vec![]
 }
 
-/// Convert `[@teammate: message]` tags in agent response to readable format
-/// for the end user, e.g. `@sender → @teammate: message`.
-pub fn convert_mentions_to_readable(response: &str, sender_agent_id: &str) -> String {
-    let tag_re = Regex::new(r"\[@(\S+?):\s*([\s\S]*?)\]").expect("valid regex");
-    tag_re
-        .replace_all(response, |caps: &regex::Captures| {
-            let target = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-            let message = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
-            format!("@{sender_agent_id} → @{target}: {message}")
-        })
-        .to_string()
-}
-
 fn is_valid_teammate(
     mentioned_id: &str,
     current_agent_id: &str,

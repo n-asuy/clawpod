@@ -17,7 +17,6 @@ routing = { path = "../routing" }
 runner = { path = "../runner" }
 session = { path = "../session" }
 store = { path = "../store" }
-team = { path = "../team" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["fs", "rt-multi-thread", "macros", "sync", "time"] }
