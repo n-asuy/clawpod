@@ -194,7 +194,19 @@ fn build_codex_command(request: &RunRequest) -> (String, Vec<String>) {
     args.push("--skip-git-repo-check".to_string());
     args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
     args.push("--json".to_string());
-    args.push(request.prompt.clone());
+
+    // Codex CLI has no --system-prompt flag, so prepend the preamble to the user prompt.
+    let prompt = match request.metadata.get("system_preamble") {
+        Some(preamble) if !preamble.trim().is_empty() => {
+            format!(
+                "<system-instructions>\n{}\n</system-instructions>\n\n{}",
+                preamble.trim(),
+                request.prompt
+            )
+        }
+        _ => request.prompt.clone(),
+    };
+    args.push(prompt);
 
     ("codex".to_string(), args)
 }
