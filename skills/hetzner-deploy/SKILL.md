@@ -344,10 +344,22 @@ model = \"gpt-5.4\"
 name = \"Main\"
 leader_agent = \"default\"
 agents = [\"default\"]
+
+# Channels — uncomment and configure as needed.
+# Token values are read from the env file (Step 6) via *_env keys.
+# [channels.slack]
+# bot_token_env = \"SLACK_BOT_TOKEN\"
+# app_token_env = \"SLACK_APP_TOKEN\"
+
+# [channels.discord]
+# bot_token_env = \"DISCORD_BOT_TOKEN\"
+
+# [channels.telegram]
+# bot_token_env = \"TELEGRAM_BOT_TOKEN\"
 TOML"
 ```
 
-> **Important**: User must configure API keys as environment variables, not in the TOML file.
+> **Important**: Channel tokens are NOT read from the env file automatically. The `[channels.*]` section in TOML must exist with `*_env` keys pointing to the env var names. Without this, the channel stays `disabled` even if env vars are set.
 
 ### Step 6: systemd Service
 
