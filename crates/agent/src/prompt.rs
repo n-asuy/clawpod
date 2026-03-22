@@ -677,4 +677,120 @@ mod tests {
 
         assert!(prompt.contains("Hello from custom section."));
     }
+
+    // -- SOUL.md integration tests --
+
+    #[test]
+    fn soul_md_bootstrap_creates_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut agents = HashMap::new();
+        agents.insert("bot".to_string(), make_agent("Bot", "sonnet"));
+        let teams = HashMap::new();
+
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+
+        let soul_path = root.join(".clawpod").join("SOUL.md");
+        assert!(soul_path.exists(), "SOUL.md should be created on bootstrap");
+
+        let content = fs::read_to_string(&soul_path).unwrap();
+        assert!(
+            content.contains("# [Your Name]"),
+            "should contain template header"
+        );
+        assert!(
+            content.contains("## Vibe"),
+            "should contain Vibe section"
+        );
+    }
+
+    #[test]
+    fn soul_md_not_overwritten_on_rebootstrap() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut agents = HashMap::new();
+        agents.insert("bot".to_string(), make_agent("Bot", "sonnet"));
+        let teams = HashMap::new();
+
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+
+        let soul_path = root.join(".clawpod").join("SOUL.md");
+        let custom = "# Kurisu\n\nI am a mad scientist assistant.\n";
+        fs::write(&soul_path, custom).unwrap();
+
+        // Re-run bootstrap — should NOT overwrite customized file
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+
+        let content = fs::read_to_string(&soul_path).unwrap();
+        assert_eq!(content, custom, "customized SOUL.md must survive re-bootstrap");
+    }
+
+    #[test]
+    fn customized_soul_md_appears_in_system_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut agents = HashMap::new();
+        agents.insert("bot".to_string(), make_agent("Bot", "sonnet"));
+        let teams = HashMap::new();
+
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+
+        // Customize SOUL.md
+        let soul_path = root.join(".clawpod").join("SOUL.md");
+        fs::write(
+            &soul_path,
+            "# Kurisu\n\nI prefer pragmatic solutions over elegant abstractions.",
+        )
+        .unwrap();
+
+        let ctx = PromptContext {
+            workspace_dir: root,
+            agent_id: "bot",
+            agents: &agents,
+            teams: &teams,
+            user_system_prompt: None,
+        };
+        let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
+
+        assert!(
+            prompt.contains("### SOUL.md"),
+            "SOUL.md heading should appear"
+        );
+        assert!(
+            prompt.contains("pragmatic solutions over elegant abstractions"),
+            "customized SOUL.md content should be injected"
+        );
+    }
+
+    #[test]
+    fn session_workspace_inherits_soul_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut agents = HashMap::new();
+        agents.insert("bot".to_string(), make_agent("Bot", "sonnet"));
+        let teams = HashMap::new();
+
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+
+        let soul_path = root.join(".clawpod").join("SOUL.md");
+        fs::write(&soul_path, "# Kurisu\n\nMad scientist persona.").unwrap();
+
+        let session_dir =
+            crate::ensure_session_workspace(root, "telegram:12345").unwrap();
+
+        // Build prompt from session directory — should see the same SOUL.md
+        let ctx = PromptContext {
+            workspace_dir: &session_dir,
+            agent_id: "bot",
+            agents: &agents,
+            teams: &teams,
+            user_system_prompt: None,
+        };
+        let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
+
+        assert!(
+            prompt.contains("Mad scientist persona"),
+            "session workspace should inherit SOUL.md via symlink"
+        );
+    }
 }
