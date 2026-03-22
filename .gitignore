@@ -1,5 +1,6 @@
 /.clawpod-local/
 /target/
+*_JA.md
 
 # Local environment files
 .env

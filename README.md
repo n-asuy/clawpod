@@ -2,9 +2,6 @@
 
 `ClawPod` lives under `experiments/clawpod` as an independent Rust workspace.
 
-- 日本語ガイド: [USAGE_JA.md](./USAGE_JA.md)
-- 業務利用向け設計書: [DESIGN_JA.md](./DESIGN_JA.md)
-
 ## Layout
 
 - Workspace: `experiments/clawpod/Cargo.toml`
