@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use session::build_session_key;
 use store::StateStore;
-use team::{execute_team_chain, TeamExecutionInput};
 use tokio::fs;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinSet;
@@ -542,116 +541,6 @@ impl QueueProcessor {
                 } else {
                     Ok(run.text)
                 }
-            }
-            Err(err) => {
-                self.store.record_run_end(
-                    run_id,
-                    RunStatus::Failed,
-                    None,
-                    Some(&err.to_string()),
-                    None,
-                )?;
-                Err(err)
-            }
-        }
-    }
-
-    async fn run_team_task(
-        &self,
-        task_id: Uuid,
-        message_id: &str,
-        session_key: &str,
-        working_directory: &Path,
-        start_agent_id: &str,
-        team_id: &str,
-        message: String,
-        continue_session: bool,
-        incoming_metadata: HashMap<String, String>,
-    ) -> Result<String> {
-        let run_id = Uuid::new_v4();
-        self.store.record_run_start(
-            run_id, task_id, message_id, session_key, start_agent_id, &message,
-        )?;
-
-        let session_workdirs = self
-            .config
-            .agents
-            .iter()
-            .map(|(agent_id, agent)| {
-                let root = self.config.resolve_agent_workdir(agent_id);
-                ensure_agent_workspace(
-                    agent_id,
-                    agent,
-                    &self.config.agents,
-                    &self.config.teams,
-                    &root,
-                )?;
-                let workdir = if agent_id == start_agent_id {
-                    working_directory.to_path_buf()
-                } else {
-                    ensure_session_workspace(&root, session_key)?
-                };
-                Ok((agent_id.clone(), workdir.display().to_string()))
-            })
-            .collect::<Result<HashMap<_, _>>>()?;
-
-        let run_metadata = self
-            .config
-            .agents
-            .keys()
-            .map(|agent_id| {
-                let plugin_metadata = if agent_id == start_agent_id {
-                    Some(&incoming_metadata)
-                } else {
-                    None
-                };
-                Ok((
-                    agent_id.clone(),
-                    self.build_run_metadata_for_agent(agent_id, plugin_metadata)?,
-                ))
-            })
-            .collect::<Result<HashMap<_, _>>>()?;
-
-        let chain_result = execute_team_chain(
-            self.runner.as_ref(),
-            TeamExecutionInput {
-                task_id,
-                session_key: session_key.to_string(),
-                team_id: team_id.to_string(),
-                start_agent_id: start_agent_id.to_string(),
-                initial_message: message,
-                continue_session,
-                max_chain_steps: self.config.chain.max_chain_steps,
-                agents: self.config.agents.clone(),
-                teams: self.config.teams.clone(),
-                session_workdirs,
-                run_metadata,
-            },
-        )
-        .await;
-
-        match chain_result {
-            Ok(chain) => {
-                let chain_id = Uuid::new_v4();
-                for (idx, step) in chain.steps.iter().enumerate() {
-                    self.store.record_chain_step(
-                        chain_id,
-                        task_id,
-                        team_id,
-                        idx,
-                        &step.agent_id,
-                        &step.input,
-                        &step.output,
-                    )?;
-                }
-                self.store.record_run_end(
-                    run_id,
-                    RunStatus::Succeeded,
-                    Some(&chain.final_text),
-                    None,
-                    None,
-                )?;
-                Ok(chain.final_text)
             }
             Err(err) => {
                 self.store.record_run_end(
