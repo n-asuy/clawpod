@@ -6,6 +6,20 @@ allowed-tools: Bash(npx agent-browser:*), Bash(agent-browser:*), Bash(*start_chr
 
 # Browser Automation with agent-browser
 
+## CRITICAL: Always use CDP connection
+
+**Never run `agent-browser open` directly.** Always launch Chrome via `start_chrome_cdp_profile.sh` first, then use `--cdp` flag. Direct invocation without `--cdp` will download and use a bundled Chromium instead of the system Google Chrome.
+
+```bash
+# WRONG — downloads bundled Chromium
+agent-browser open https://example.com
+
+# CORRECT — uses system Google Chrome via CDP
+eval "$(.agents/skills/agent-browser/scripts/start_chrome_cdp_profile.sh)"
+ab() { agent-browser --cdp "$cdp_port" "$@"; }
+ab open https://example.com
+```
+
 ## Core Workflow
 
 ```mermaid
