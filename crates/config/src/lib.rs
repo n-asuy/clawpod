@@ -511,7 +511,6 @@ impl RuntimeConfig {
         )
     }
 
-
     pub fn telegram_bot_token(&self) -> Result<Option<String>> {
         resolve_channel_secret(
             self.channels
@@ -936,10 +935,7 @@ pub fn read_codex_access_token() -> Option<String> {
     let path = codex_auth_path()?;
     let content = fs::read_to_string(&path).ok()?;
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let access_token = json
-        .get("tokens")?
-        .get("access_token")?
-        .as_str()?;
+    let access_token = json.get("tokens")?.get("access_token")?.as_str()?;
 
     if let Some(exp) = decode_jwt_exp(access_token) {
         let now = chrono::Utc::now().timestamp();

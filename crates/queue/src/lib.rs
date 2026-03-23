@@ -2,18 +2,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent::{clear_reset_flag, ensure_agent_workspace, ensure_session_workspace, PromptContext, SystemPromptBuilder};
+use agent::{
+    clear_reset_flag, ensure_agent_workspace, ensure_session_workspace, PromptContext,
+    SystemPromptBuilder,
+};
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use config::{CustomProviderConfig, RuntimeConfig};
 use domain::{
-    AgentConfig, ChatType, InboundEvent, OutboundEvent, ProviderHarness, ProviderKind, RunRequest,
-    RunStatus, Runner,
+    AgentConfig, ChatType, ChatroomPost, InboundEvent, OutboundEvent, ProviderHarness,
+    ProviderKind, RunRequest, RunStatus, Runner,
 };
 use observer::FileEventSink;
 use plugins::{dispatch_event, transform_incoming, transform_outgoing, HookContext};
 use regex::Regex;
-use routing::{find_team_for_agent, parse_agent_routing, resolve_binding};
+use routing::{extract_chatroom_posts, find_team_for_agent, parse_agent_routing, resolve_binding};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use session::build_session_key;
@@ -331,7 +334,9 @@ impl QueueProcessor {
             default_agent.clone()
         };
 
-        let team_id = if route.is_team_routed {
+        let team_id = if event.channel == "chatroom" {
+            Some(event.peer_id.clone())
+        } else if route.is_team_routed {
             route.team_id.clone()
         } else {
             find_team_for_agent(&agent_id, &self.config.teams)
@@ -398,6 +403,12 @@ impl QueueProcessor {
 
         match outcome {
             Ok(text) => {
+                let chatroom_posts = extract_chatroom_posts(&text, &agent_id, &self.config.teams);
+                if !chatroom_posts.is_empty() {
+                    self.post_chatroom_messages(&agent_id, &chatroom_posts)
+                        .await?;
+                }
+
                 // Extract teammate mentions and enqueue as separate messages (flat handoff)
                 if let Some(ref tid) = team_id {
                     let next_depth = event.chain_depth + 1;
@@ -552,8 +563,14 @@ impl QueueProcessor {
             metadata,
         };
 
-        self.store
-            .record_run_start(run_id, task_id, message_id, session_key, agent_id, &req.prompt)?;
+        self.store.record_run_start(
+            run_id,
+            task_id,
+            message_id,
+            session_key,
+            agent_id,
+            &req.prompt,
+        )?;
 
         let out = self.runner.run(req).await;
         match out {
@@ -591,6 +608,10 @@ impl QueueProcessor {
         outbound: OutboundEvent,
         metadata: HashMap<String, String>,
     ) -> Result<()> {
+        if event.channel == "chatroom" {
+            return Ok(());
+        }
+
         enqueue_outgoing_message(
             &self.config,
             &event.channel,
@@ -604,6 +625,45 @@ impl QueueProcessor {
             metadata,
         )
         .await?;
+        Ok(())
+    }
+
+    async fn post_chatroom_messages(&self, from_agent: &str, posts: &[ChatroomPost]) -> Result<()> {
+        for post in posts {
+            let Some(team) = self.config.teams.get(&post.team_id) else {
+                continue;
+            };
+
+            let message =
+                self.store
+                    .record_chatroom_message(&post.team_id, from_agent, &post.message)?;
+
+            self.emit_event(
+                "chatroom_message_posted",
+                json!({
+                    "message_id": message.id,
+                    "team_id": post.team_id,
+                    "from_agent": from_agent,
+                }),
+            )
+            .await?;
+
+            for teammate_id in &team.agents {
+                if teammate_id == from_agent || !self.config.agents.contains_key(teammate_id) {
+                    continue;
+                }
+
+                enqueue_chatroom_message(
+                    &self.config,
+                    &post.team_id,
+                    teammate_id,
+                    from_agent,
+                    &post.message,
+                )
+                .await?;
+            }
+        }
+
         Ok(())
     }
 
@@ -928,6 +988,34 @@ pub async fn enqueue_message(config: &RuntimeConfig, msg: EnqueueMessage) -> Res
     Ok(path)
 }
 
+pub async fn enqueue_chatroom_message(
+    config: &RuntimeConfig,
+    team_id: &str,
+    recipient_agent: &str,
+    from_agent: &str,
+    message: &str,
+) -> Result<PathBuf> {
+    enqueue_message(
+        config,
+        EnqueueMessage {
+            channel: "chatroom".to_string(),
+            sender: from_agent.to_string(),
+            sender_id: from_agent.to_string(),
+            message: format!("[Chat room #{team_id} - @{from_agent}]:\n{message}"),
+            message_id: format!("chatroom-{}-{}", Uuid::new_v4().simple(), recipient_agent),
+            timestamp_ms: Utc::now().timestamp_millis(),
+            chat_type: ChatType::Group,
+            peer_id: team_id.to_string(),
+            account_id: None,
+            pre_routed_agent: Some(recipient_agent.to_string()),
+            from_agent: Some(from_agent.to_string()),
+            files: vec![],
+            chain_depth: 0,
+        },
+    )
+    .await
+}
+
 pub async fn enqueue_outgoing_message(
     config: &RuntimeConfig,
     channel: &str,
@@ -1155,8 +1243,7 @@ mod tests {
             "agent": "tester",
             "chain_depth": 3,
         });
-        let envelope: IncomingQueueEnvelope =
-            serde_json::from_value(payload).expect("deserialize");
+        let envelope: IncomingQueueEnvelope = serde_json::from_value(payload).expect("deserialize");
         assert_eq!(envelope.chain_depth, 3);
         assert_eq!(envelope.agent.as_deref(), Some("tester"));
     }
@@ -1170,8 +1257,7 @@ mod tests {
             "timestamp": 1711100000000_i64,
             "message_id": "msg-1",
         });
-        let envelope: IncomingQueueEnvelope =
-            serde_json::from_value(payload).expect("deserialize");
+        let envelope: IncomingQueueEnvelope = serde_json::from_value(payload).expect("deserialize");
         assert_eq!(envelope.chain_depth, 0);
     }
 
@@ -1205,8 +1291,7 @@ mod tests {
             "chain_depth": msg.chain_depth,
         });
 
-        let envelope: IncomingQueueEnvelope =
-            serde_json::from_value(payload).expect("roundtrip");
+        let envelope: IncomingQueueEnvelope = serde_json::from_value(payload).expect("roundtrip");
         assert_eq!(envelope.chain_depth, 5);
         assert_eq!(envelope.agent.as_deref(), Some("tester"));
     }

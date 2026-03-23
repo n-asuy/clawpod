@@ -382,7 +382,11 @@ fn pairing_cmd(config: &RuntimeConfig, command: &PairingCommand) -> Result<()> {
             if let Some(expires_str) = &entry.pairing_code_expires_at {
                 if let Ok(expires) = chrono::DateTime::parse_from_rfc3339(expires_str) {
                     if pairing::is_code_expired(&expires.with_timezone(&Utc)) {
-                        bail!("pairing code has expired for {}/{}", entry.channel, entry.sender_id);
+                        bail!(
+                            "pairing code has expired for {}/{}",
+                            entry.channel,
+                            entry.sender_id
+                        );
                     }
                 }
             }
@@ -466,9 +470,7 @@ async fn auth_cmd(command: &AuthCommand) -> Result<()> {
             let codex_auth = config::check_codex_auth();
             println!("OpenAI (codex):");
             if codex_auth.is_usable() {
-                println!(
-                    "  status:  authenticated",
-                );
+                println!("  status:  authenticated",);
                 if let Some(account) = &codex_auth.account_id {
                     println!("  account: {account}");
                 }
@@ -504,7 +506,10 @@ async fn auth_openai() -> Result<()> {
         .context("failed to run 'codex login'")?;
 
     if !status.success() {
-        bail!("codex login failed with exit code: {}", status.code().unwrap_or(-1));
+        bail!(
+            "codex login failed with exit code: {}",
+            status.code().unwrap_or(-1)
+        );
     }
 
     println!();
@@ -578,14 +583,10 @@ async fn status(config: &RuntimeConfig, config_path: &Path) -> Result<()> {
         for run in runs {
             println!(
                 "  - {} {} {} {}",
-                run.get("updated_at")
-                    .and_then(Value::as_str)
-                    .unwrap_or("-"),
+                run.get("updated_at").and_then(Value::as_str).unwrap_or("-"),
                 run.get("agent_id").and_then(Value::as_str).unwrap_or("-"),
                 run.get("status").and_then(Value::as_str).unwrap_or("-"),
-                run.get("message_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("-"),
+                run.get("message_id").and_then(Value::as_str).unwrap_or("-"),
             );
         }
     }

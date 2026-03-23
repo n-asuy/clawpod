@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use domain::{RunStatus, TeamChainStepView};
+use domain::{ChatroomMessageView, RunStatus, TeamChainStepView};
 pub use pairing::VerifyResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,6 +58,8 @@ struct StoreSnapshot {
     #[serde(default)]
     chain_steps: Vec<ChainStepRecord>,
     #[serde(default)]
+    chatroom_messages: Vec<ChatroomMessageRecord>,
+    #[serde(default)]
     events: Vec<EventRecord>,
     #[serde(default)]
     sessions: HashMap<String, SessionRecord>,
@@ -65,6 +67,8 @@ struct StoreSnapshot {
     sender_access: HashMap<String, SenderAccessRecord>,
     #[serde(default)]
     next_event_id: i64,
+    #[serde(default)]
+    next_chatroom_message_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +112,15 @@ struct EventRecord {
     id: i64,
     event_type: String,
     payload: Value,
+    created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatroomMessageRecord {
+    id: i64,
+    team_id: String,
+    from_agent: String,
+    message: String,
     created_at: String,
 }
 
@@ -255,11 +268,7 @@ impl StateStore {
         self.persist_locked(&snapshot)
     }
 
-    pub fn list_chain_steps(
-        &self,
-        team_id: &str,
-        limit: usize,
-    ) -> Result<Vec<TeamChainStepView>> {
+    pub fn list_chain_steps(&self, team_id: &str, limit: usize) -> Result<Vec<TeamChainStepView>> {
         let mut snapshot = self.lock_snapshot()?;
         self.refresh_locked(&mut snapshot)?;
         let mut steps: Vec<_> = snapshot
@@ -296,6 +305,62 @@ impl StateStore {
             created_at: now_rfc3339(),
         });
         self.persist_locked(&snapshot)
+    }
+
+    pub fn record_chatroom_message(
+        &self,
+        team_id: &str,
+        from_agent: &str,
+        message: &str,
+    ) -> Result<ChatroomMessageView> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        snapshot.next_chatroom_message_id += 1;
+        let record = ChatroomMessageRecord {
+            id: snapshot.next_chatroom_message_id,
+            team_id: team_id.to_string(),
+            from_agent: from_agent.to_string(),
+            message: message.to_string(),
+            created_at: now_rfc3339(),
+        };
+        snapshot.chatroom_messages.push(record.clone());
+        self.persist_locked(&snapshot)?;
+        Ok(ChatroomMessageView {
+            id: record.id,
+            team_id: record.team_id,
+            from_agent: record.from_agent,
+            message: record.message,
+            created_at: record.created_at,
+        })
+    }
+
+    pub fn list_chatroom_messages(
+        &self,
+        team_id: &str,
+        limit: usize,
+        since_id: Option<i64>,
+    ) -> Result<Vec<ChatroomMessageView>> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        let mut messages: Vec<_> = snapshot
+            .chatroom_messages
+            .iter()
+            .filter(|record| record.team_id == team_id)
+            .filter(|record| since_id.map_or(true, |since| record.id > since))
+            .cloned()
+            .collect();
+        messages.sort_by_key(|record| record.id);
+        let start = messages.len().saturating_sub(limit);
+        Ok(messages[start..]
+            .iter()
+            .map(|record| ChatroomMessageView {
+                id: record.id,
+                team_id: record.team_id.clone(),
+                from_agent: record.from_agent.clone(),
+                message: record.message.clone(),
+                created_at: record.created_at.clone(),
+            })
+            .collect())
     }
 
     pub fn session_exists(&self, session_key: &str) -> Result<bool> {
@@ -729,6 +794,12 @@ impl StoreSnapshot {
             .map(|event| event.id)
             .max()
             .unwrap_or_default();
+        self.next_chatroom_message_id = self
+            .chatroom_messages
+            .iter()
+            .map(|message| message.id)
+            .max()
+            .unwrap_or_default();
     }
 }
 
@@ -861,6 +932,27 @@ mod tests {
     }
 
     #[test]
+    fn chatroom_messages_roundtrip_in_order() {
+        let path = temp_state_path("chatroom");
+        let store = StateStore::new(&path).expect("store");
+
+        let first = store
+            .record_chatroom_message("dev", "default", "hello team")
+            .expect("first");
+        let second = store
+            .record_chatroom_message("dev", "reviewer", "on it")
+            .expect("second");
+
+        let messages = store
+            .list_chatroom_messages("dev", 10, None)
+            .expect("list messages");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].id, first.id);
+        assert_eq!(messages[1].id, second.id);
+        assert_eq!(messages[1].from_agent, "reviewer");
+    }
+
+    #[test]
     fn store_and_retrieve_pairing_code() {
         let path = temp_state_path("pairing_code");
         let store = StateStore::new(&path).expect("store");
@@ -949,9 +1041,7 @@ mod tests {
             .clear_pairing_code("discord", "D001")
             .expect("clear code");
 
-        let code = store
-            .get_pairing_code("discord", "D001")
-            .expect("get code");
+        let code = store.get_pairing_code("discord", "D001").expect("get code");
         assert!(code.is_none());
     }
 
@@ -1005,9 +1095,7 @@ mod tests {
             .store_pairing_code("telegram", "T100", "UPPERCASE", "2099-01-01T00:00:00Z")
             .expect("store code");
 
-        let found = store
-            .find_pending_by_code("uppercase")
-            .expect("find");
+        let found = store.find_pending_by_code("uppercase").expect("find");
         assert!(found.is_some());
     }
 
@@ -1036,9 +1124,7 @@ mod tests {
             .approve_sender_access("slack", "S002")
             .expect("approve");
 
-        let found = store
-            .find_pending_by_code("APPROVED1")
-            .expect("find");
+        let found = store.find_pending_by_code("APPROVED1").expect("find");
         assert!(found.is_none(), "should not find approved entry by code");
     }
 
@@ -1051,7 +1137,13 @@ mod tests {
 
         store
             .register_sender_access_request(
-                "telegram", "V1", Some("alice"), "P1", None, Some("hi"), Some("m1"),
+                "telegram",
+                "V1",
+                Some("alice"),
+                "P1",
+                None,
+                Some("hi"),
+                Some("m1"),
             )
             .expect("register");
 
@@ -1073,7 +1165,13 @@ mod tests {
 
         store
             .register_sender_access_request(
-                "telegram", "V2", Some("bob"), "P2", None, Some("hi"), Some("m2"),
+                "telegram",
+                "V2",
+                Some("bob"),
+                "P2",
+                None,
+                Some("hi"),
+                Some("m2"),
             )
             .expect("register");
 
@@ -1094,7 +1192,13 @@ mod tests {
 
         store
             .register_sender_access_request(
-                "telegram", "V3", Some("carol"), "P3", None, Some("hi"), Some("m3"),
+                "telegram",
+                "V3",
+                Some("carol"),
+                "P3",
+                None,
+                Some("hi"),
+                Some("m3"),
             )
             .expect("register");
 
@@ -1116,7 +1220,13 @@ mod tests {
 
         store
             .register_sender_access_request(
-                "telegram", "V4", Some("dave"), "P4", None, Some("hi"), Some("m4"),
+                "telegram",
+                "V4",
+                Some("dave"),
+                "P4",
+                None,
+                Some("hi"),
+                Some("m4"),
             )
             .expect("register");
 
@@ -1138,7 +1248,13 @@ mod tests {
 
         store
             .register_sender_access_request(
-                "telegram", "V5", Some("eve"), "P5", None, Some("hi"), Some("m5"),
+                "telegram",
+                "V5",
+                Some("eve"),
+                "P5",
+                None,
+                Some("hi"),
+                Some("m5"),
             )
             .expect("register");
 
@@ -1168,7 +1284,13 @@ mod tests {
 
         store
             .register_sender_access_request(
-                "telegram", "V6", Some("frank"), "P6", None, Some("hi"), Some("m6"),
+                "telegram",
+                "V6",
+                Some("frank"),
+                "P6",
+                None,
+                Some("hi"),
+                Some("m6"),
             )
             .expect("register");
 
@@ -1196,7 +1318,13 @@ mod tests {
 
         store
             .register_sender_access_request(
-                "telegram", "V7", Some("grace"), "P7", None, Some("hi"), Some("m7"),
+                "telegram",
+                "V7",
+                Some("grace"),
+                "P7",
+                None,
+                Some("hi"),
+                Some("m7"),
             )
             .expect("register");
 
@@ -1234,9 +1362,7 @@ mod tests {
             .store_pairing_code("slack", "S003", "REALCODE", "2099-01-01T00:00:00Z")
             .expect("store code");
 
-        let found = store
-            .find_pending_by_code("WRONGONE")
-            .expect("find");
+        let found = store.find_pending_by_code("WRONGONE").expect("find");
         assert!(found.is_none());
     }
 }

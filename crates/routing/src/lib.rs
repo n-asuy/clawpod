@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use domain::{AgentConfig, BindingRule, InboundEvent, MentionHandoff, RouteDecision, TeamConfig};
+use domain::{
+    AgentConfig, BindingRule, ChatroomPost, InboundEvent, MentionHandoff, RouteDecision, TeamConfig,
+};
 use regex::Regex;
 
 pub fn parse_agent_routing(
@@ -142,6 +144,46 @@ pub fn find_team_for_agent(agent_id: &str, teams: &HashMap<String, TeamConfig>) 
         }
     }
     None
+}
+
+pub fn extract_chatroom_posts(
+    response: &str,
+    current_agent_id: &str,
+    teams: &HashMap<String, TeamConfig>,
+) -> Vec<ChatroomPost> {
+    let tag_re = Regex::new(r"\[#(\S+?):\s*([\s\S]*?)\]").expect("valid regex");
+    let mut posts = vec![];
+
+    for caps in tag_re.captures_iter(response) {
+        let team_id = caps
+            .get(1)
+            .map(|m| m.as_str().to_lowercase())
+            .unwrap_or_default();
+        let message = caps
+            .get(2)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+
+        if message.is_empty() {
+            continue;
+        }
+
+        let Some(team) = teams.get(&team_id) else {
+            continue;
+        };
+
+        if !team
+            .agents
+            .iter()
+            .any(|agent_id| agent_id == current_agent_id)
+        {
+            continue;
+        }
+
+        posts.push(ChatroomPost { team_id, message });
+    }
+
+    posts
 }
 
 pub fn extract_teammate_mentions(
@@ -299,6 +341,26 @@ mod tests {
     }
 
     #[test]
+    fn extracts_chatroom_posts_for_current_team() {
+        let teams = sample_teams();
+        let posts = extract_chatroom_posts(
+            "working on it [#dev: reviewer found two issues]",
+            "default",
+            &teams,
+        );
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].team_id, "dev");
+        assert_eq!(posts[0].message, "reviewer found two issues");
+    }
+
+    #[test]
+    fn rejects_chatroom_posts_for_non_member() {
+        let teams = sample_teams();
+        let posts = extract_chatroom_posts("[#dev: hello team]", "outsider", &teams);
+        assert!(posts.is_empty());
+    }
+
+    #[test]
     fn rejects_mention_back_to_sender() {
         let agents = sample_agents();
         let teams = sample_teams();
@@ -311,7 +373,10 @@ mod tests {
             &teams,
             &agents,
         );
-        assert!(mentions.is_empty(), "mention back to from_agent should be rejected");
+        assert!(
+            mentions.is_empty(),
+            "mention back to from_agent should be rejected"
+        );
     }
 
     #[test]
@@ -330,7 +395,11 @@ mod tests {
             },
         );
         let mut teams = sample_teams();
-        teams.get_mut("dev").unwrap().agents.push("tester".to_string());
+        teams
+            .get_mut("dev")
+            .unwrap()
+            .agents
+            .push("tester".to_string());
 
         // reviewer received a message from default, mentions tester (not default)
         let mentions = extract_teammate_mentions(

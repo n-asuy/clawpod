@@ -303,6 +303,21 @@ pub struct TeamChainStepView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatroomMessageView {
+    pub id: i64,
+    pub team_id: String,
+    pub from_agent: String,
+    pub message: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatroomPost {
+    pub team_id: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MentionHandoff {
     pub teammate_id: String,
     pub message: String,

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use domain::{AgentConfig, TeamConfig};
 
-pub use memory::{MemorySection, load_memory_index};
+pub use memory::{load_memory_index, MemorySection};
 pub use prompt::{PromptContext, PromptSection, SystemPromptBuilder};
 
 const SOUL_TEMPLATE: &str = r#"# [Your Name]

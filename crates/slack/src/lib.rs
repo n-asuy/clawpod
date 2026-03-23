@@ -600,35 +600,75 @@ async fn handle_message_event(
 
             if pairing::looks_like_pairing_code(raw_text, config.pairing.code_length) {
                 let result = store.verify_pairing_code(
-                    "slack", user_id, raw_text,
-                    config.pairing.max_failed_attempts, config.pairing.lockout_secs,
+                    "slack",
+                    user_id,
+                    raw_text,
+                    config.pairing.max_failed_attempts,
+                    config.pairing.lockout_secs,
                 )?;
                 match result {
                     VerifyResult::Approved => {
-                        enqueue_pairing_response(config, "slack", &peer_id, &notice_id,
-                            "Pairing approved. You can now send messages.").await?;
+                        enqueue_pairing_response(
+                            config,
+                            "slack",
+                            &peer_id,
+                            &notice_id,
+                            "Pairing approved. You can now send messages.",
+                        )
+                        .await?;
                     }
                     VerifyResult::Expired => {
-                        let pc = pairing::generate_code(config.pairing.code_length, config.pairing.code_ttl_secs);
-                        store.store_pairing_code("slack", user_id, &pc.code, &pc.expires_at.to_rfc3339())?;
-                        enqueue_pairing_response(config, "slack", &peer_id, &notice_id,
-                            &format!("Code expired. Your new pairing code: {}", pc.code)).await?;
+                        let pc = pairing::generate_code(
+                            config.pairing.code_length,
+                            config.pairing.code_ttl_secs,
+                        );
+                        store.store_pairing_code(
+                            "slack",
+                            user_id,
+                            &pc.code,
+                            &pc.expires_at.to_rfc3339(),
+                        )?;
+                        enqueue_pairing_response(
+                            config,
+                            "slack",
+                            &peer_id,
+                            &notice_id,
+                            &format!("Code expired. Your new pairing code: {}", pc.code),
+                        )
+                        .await?;
                     }
                     VerifyResult::LockedOut => {
-                        enqueue_pairing_response(config, "slack", &peer_id, &notice_id,
-                            "Too many failed attempts. Please try again later.").await?;
+                        enqueue_pairing_response(
+                            config,
+                            "slack",
+                            &peer_id,
+                            &notice_id,
+                            "Too many failed attempts. Please try again later.",
+                        )
+                        .await?;
                     }
                     VerifyResult::InvalidCode => {
-                        enqueue_pairing_response(config, "slack", &peer_id, &notice_id,
-                            "Invalid pairing code. Please check and try again.").await?;
+                        enqueue_pairing_response(
+                            config,
+                            "slack",
+                            &peer_id,
+                            &notice_id,
+                            "Invalid pairing code. Please check and try again.",
+                        )
+                        .await?;
                     }
                 }
                 return Ok(());
             }
 
             let registration = store.register_sender_access_request(
-                "slack", user_id, Some(user_id), &peer_id, None,
-                Some(raw_text), Some(&format!("slack_{}_{}", channel_id, ts.replace('.', "_"))),
+                "slack",
+                user_id,
+                Some(user_id),
+                &peer_id,
+                None,
+                Some(raw_text),
+                Some(&format!("slack_{}_{}", channel_id, ts.replace('.', "_"))),
             )?;
             diagnostics.emit(
                 "slack_event_dropped",
@@ -642,8 +682,16 @@ async fn handle_message_event(
                 }),
             );
             if registration == SenderAccessRegistration::PendingCreated {
-                let pc = pairing::generate_code(config.pairing.code_length, config.pairing.code_ttl_secs);
-                store.store_pairing_code("slack", user_id, &pc.code, &pc.expires_at.to_rfc3339())?;
+                let pc = pairing::generate_code(
+                    config.pairing.code_length,
+                    config.pairing.code_ttl_secs,
+                );
+                store.store_pairing_code(
+                    "slack",
+                    user_id,
+                    &pc.code,
+                    &pc.expires_at.to_rfc3339(),
+                )?;
                 enqueue_pairing_response(config, "slack", &peer_id, &notice_id,
                     &format!("This conversation requires pairing. Your code: {}\n\nReply with this code to pair.", pc.code)).await?;
             }

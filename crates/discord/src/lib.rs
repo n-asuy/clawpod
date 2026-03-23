@@ -124,40 +124,87 @@ async fn handle_message(
 
             if pairing::looks_like_pairing_code(&message.content, config.pairing.code_length) {
                 let result = store.verify_pairing_code(
-                    "discord", &sender_id, &message.content,
-                    config.pairing.max_failed_attempts, config.pairing.lockout_secs,
+                    "discord",
+                    &sender_id,
+                    &message.content,
+                    config.pairing.max_failed_attempts,
+                    config.pairing.lockout_secs,
                 )?;
                 match result {
                     VerifyResult::Approved => {
-                        enqueue_pairing_response(config, "discord", &recipient, &notice_id,
-                            "Pairing approved. You can now send messages.").await?;
+                        enqueue_pairing_response(
+                            config,
+                            "discord",
+                            &recipient,
+                            &notice_id,
+                            "Pairing approved. You can now send messages.",
+                        )
+                        .await?;
                     }
                     VerifyResult::Expired => {
-                        let pc = pairing::generate_code(config.pairing.code_length, config.pairing.code_ttl_secs);
-                        store.store_pairing_code("discord", &sender_id, &pc.code, &pc.expires_at.to_rfc3339())?;
-                        enqueue_pairing_response(config, "discord", &recipient, &notice_id,
-                            &format!("Code expired. Your new pairing code: {}", pc.code)).await?;
+                        let pc = pairing::generate_code(
+                            config.pairing.code_length,
+                            config.pairing.code_ttl_secs,
+                        );
+                        store.store_pairing_code(
+                            "discord",
+                            &sender_id,
+                            &pc.code,
+                            &pc.expires_at.to_rfc3339(),
+                        )?;
+                        enqueue_pairing_response(
+                            config,
+                            "discord",
+                            &recipient,
+                            &notice_id,
+                            &format!("Code expired. Your new pairing code: {}", pc.code),
+                        )
+                        .await?;
                     }
                     VerifyResult::LockedOut => {
-                        enqueue_pairing_response(config, "discord", &recipient, &notice_id,
-                            "Too many failed attempts. Please try again later.").await?;
+                        enqueue_pairing_response(
+                            config,
+                            "discord",
+                            &recipient,
+                            &notice_id,
+                            "Too many failed attempts. Please try again later.",
+                        )
+                        .await?;
                     }
                     VerifyResult::InvalidCode => {
-                        enqueue_pairing_response(config, "discord", &recipient, &notice_id,
-                            "Invalid pairing code. Please check and try again.").await?;
+                        enqueue_pairing_response(
+                            config,
+                            "discord",
+                            &recipient,
+                            &notice_id,
+                            "Invalid pairing code. Please check and try again.",
+                        )
+                        .await?;
                     }
                 }
                 return Ok(());
             }
 
             let registration = store.register_sender_access_request(
-                "discord", &sender_id, Some(&message.author.name), &recipient,
+                "discord",
+                &sender_id,
+                Some(&message.author.name),
+                &recipient,
                 message.guild_id.map(|id| id.to_string()).as_deref(),
-                Some(&message.content), Some(&format!("discord_{}", message.id)),
+                Some(&message.content),
+                Some(&format!("discord_{}", message.id)),
             )?;
             if registration == SenderAccessRegistration::PendingCreated {
-                let pc = pairing::generate_code(config.pairing.code_length, config.pairing.code_ttl_secs);
-                store.store_pairing_code("discord", &sender_id, &pc.code, &pc.expires_at.to_rfc3339())?;
+                let pc = pairing::generate_code(
+                    config.pairing.code_length,
+                    config.pairing.code_ttl_secs,
+                );
+                store.store_pairing_code(
+                    "discord",
+                    &sender_id,
+                    &pc.code,
+                    &pc.expires_at.to_rfc3339(),
+                )?;
                 enqueue_pairing_response(config, "discord", &recipient, &notice_id,
                     &format!("This conversation requires pairing. Your code: {}\n\nReply with this code to pair.", pc.code)).await?;
             }

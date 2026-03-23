@@ -498,10 +498,16 @@ mod tests {
     fn teammates_section_renders_self_and_teammates() {
         let ws = tempfile::tempdir().unwrap();
         let mut agents = HashMap::new();
-        agents.insert("alice".to_string(), make_agent("Alice", "claude-sonnet-4-5"));
+        agents.insert(
+            "alice".to_string(),
+            make_agent("Alice", "claude-sonnet-4-5"),
+        );
         agents.insert("bob".to_string(), make_agent("Bob", "gpt-4o"));
         let mut teams = HashMap::new();
-        teams.insert("dev".to_string(), make_team("Dev", &["alice", "bob"], "alice"));
+        teams.insert(
+            "dev".to_string(),
+            make_team("Dev", &["alice", "bob"], "alice"),
+        );
         let ctx = PromptContext {
             workspace_dir: ws.path(),
             agent_id: "alice",
@@ -696,10 +702,7 @@ mod tests {
             content.contains("# [Your Name]"),
             "should contain template header"
         );
-        assert!(
-            content.contains("## Vibe"),
-            "should contain Vibe section"
-        );
+        assert!(content.contains("## Vibe"), "should contain Vibe section");
     }
 
     #[test]
@@ -720,7 +723,10 @@ mod tests {
         crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
 
         let content = fs::read_to_string(&soul_path).unwrap();
-        assert_eq!(content, custom, "customized SOUL.md must survive re-bootstrap");
+        assert_eq!(
+            content, custom,
+            "customized SOUL.md must survive re-bootstrap"
+        );
     }
 
     #[test]
@@ -773,8 +779,7 @@ mod tests {
         let soul_path = root.join(".clawpod").join("SOUL.md");
         fs::write(&soul_path, "# Kurisu\n\nMad scientist persona.").unwrap();
 
-        let session_dir =
-            crate::ensure_session_workspace(root, "telegram:12345").unwrap();
+        let session_dir = crate::ensure_session_workspace(root, "telegram:12345").unwrap();
 
         // Build prompt from session directory — should see the same SOUL.md
         let ctx = PromptContext {

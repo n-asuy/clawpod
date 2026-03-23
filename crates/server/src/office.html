@@ -1402,49 +1402,76 @@ tr:hover td { background: var(--bg-hover); }
           ${teamIds.map(t => `<option value="${t}" ${t===chatTeamId?'selected':''}>${t}</option>`).join('')}
         </select>
       </div>
-      <div class="card" style="height:calc(100vh - 200px);overflow-y:auto;padding:16px">
-        <div id="chain-steps-container"></div>
+      <div class="card" style="display:flex;flex-direction:column;height:calc(100vh - 220px);padding:16px">
+        <div id="chatroom-messages-container" style="flex:1;overflow-y:auto"></div>
+        <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">
+          <textarea
+            class="form-textarea"
+            id="chatroom-input"
+            placeholder="Post an update to the whole team"
+            style="min-height:96px"
+          ></textarea>
+          <div style="display:flex;justify-content:flex-end;margin-top:8px">
+            <button class="btn btn-primary" onclick="sendChatroomMessage()">Send</button>
+          </div>
+        </div>
       </div>`;
 
-    loadChainSteps();
+    loadChatroomMessages();
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-    pollTimer = setInterval(() => { if (currentPage === 'chatroom') loadChainSteps(); }, 5000);
+    pollTimer = setInterval(() => { if (currentPage === 'chatroom') loadChatroomMessages(); }, 5000);
   }
 
   window.switchChatTeam = function(id) {
     chatTeamId = id;
-    loadChainSteps();
+    loadChatroomMessages();
   };
 
-  function truncate(text, max) {
-    if (!text || text.length <= max) return text;
-    return text.slice(0, max) + '...';
+  function renderChatroomMessage(message) {
+    const body = escapeHtml(message.message || '').replace(/\n/g, '<br>');
+    return `
+      <div class="chain-step">
+        <div class="chain-step-header">
+          <span class="chain-step-agent">${escapeHtml(message.from_agent || 'unknown')}</span>
+          <span class="text-muted" style="margin-left:auto">${fmtDateTime(message.created_at)}</span>
+        </div>
+        <div class="chain-step-body" style="white-space:normal">${body}</div>
+      </div>`;
   }
 
-  async function loadChainSteps() {
+  async function loadChatroomMessages() {
     if (!chatTeamId) return;
     try {
       const data = await GET(`/api/chatroom/${chatTeamId}?limit=100`);
-      const steps = data.steps || [];
-      const container = $('#chain-steps-container');
+      const messages = data.messages || [];
+      const container = $('#chatroom-messages-container');
       if (!container) return;
 
-      container.innerHTML = steps.length === 0
-        ? '<div class="empty">No team chain activity</div>'
-        : steps.map(s => `
-          <div class="chain-step">
-            <div class="chain-step-header">
-              <span class="chain-step-index">step ${s.step_index}</span>
-              <span class="chain-step-agent">${escapeHtml(s.agent_id)}</span>
-              <span class="text-muted" style="margin-left:auto">${fmtTime(s.created_at)}</span>
-            </div>
-            <div class="chain-step-input">${escapeHtml(truncate(s.input, 300))}</div>
-            <div class="chain-step-body">${escapeHtml(truncate(s.output, 500))}</div>
-          </div>`).join('');
+      container.innerHTML = messages.length === 0
+        ? '<div class="empty">No chatroom messages yet</div>'
+        : messages.map(renderChatroomMessage).join('');
 
       container.scrollTop = container.scrollHeight;
     } catch { /* ignore */ }
   }
+
+  window.sendChatroomMessage = async function() {
+    if (!chatTeamId) return;
+    const input = $('#chatroom-input');
+    const message = (input && input.value || '').trim();
+    if (!message) {
+      toast('Message is empty', 'error');
+      return;
+    }
+
+    try {
+      await POST(`/api/chatroom/${chatTeamId}`, { message });
+      input.value = '';
+      await loadChatroomMessages();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
 
   /* ── SSE ── */
   function connectSSE() {
@@ -1470,13 +1497,19 @@ tr:hover td { background: var(--bg-hover); }
       try {
         const data = JSON.parse(event.data);
         if (data.event_type) {
+          if (data.event_type === 'chatroom_message_posted' && currentPage === 'chatroom') {
+            if (!data.payload || !data.payload.team_id || data.payload.team_id === chatTeamId) {
+              loadChatroomMessages();
+            }
+            return;
+          }
+
           const refreshPages = {
             agent_created: 'agents', agent_updated: 'agents', agent_deleted: 'agents',
             team_created: 'teams', team_updated: 'teams', team_deleted: 'teams',
             settings_updated: 'settings',
             sender_access_approved: 'access', sender_access_rejected: 'access',
             manual_response_queued: 'responses',
-            run_succeeded: 'chatroom',
           };
           if (refreshPages[data.event_type] === currentPage) {
             renderPage(currentPage);

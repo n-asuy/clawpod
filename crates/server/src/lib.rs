@@ -13,7 +13,7 @@ use chrono::Utc;
 use config::{ensure_runtime_dirs, write_config, RuntimeConfig};
 use domain::{AgentConfig, TeamConfig};
 use observer::{mark_component_error, mark_component_ok, snapshot_json, FileEventSink};
-use queue::{enqueue_outgoing_message, list_outgoing_messages};
+use queue::{enqueue_chatroom_message, enqueue_outgoing_message, list_outgoing_messages};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use store::StateStore;
@@ -49,6 +49,13 @@ struct LimitQuery {
 #[derive(Debug, Deserialize)]
 struct PendingResponsesQuery {
     channel: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatroomQuery {
+    limit: Option<usize>,
+    #[serde(default)]
+    since: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,12 +117,14 @@ struct SaveFileRequest {
     content: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PostChatroomRequest {
+    message: String,
+}
+
 /// Workspace files that can be edited via the API.
 /// Each entry is (subdirectory relative to agent root, display name).
-const EDITABLE_FILES: &[(&str, &str)] = &[
-    (".clawpod", "SOUL.md"),
-    ("", "AGENTS.md"),
-];
+const EDITABLE_FILES: &[(&str, &str)] = &[(".clawpod", "SOUL.md"), ("", "AGENTS.md")];
 
 pub async fn run(
     config: RuntimeConfig,
@@ -148,10 +157,7 @@ pub async fn run(
             "/api/agents/:agent_id/sessions/clear",
             post(clear_agent_sessions_api),
         )
-        .route(
-            "/api/agents/:agent_id/files",
-            get(list_agent_files),
-        )
+        .route("/api/agents/:agent_id/files", get(list_agent_files))
         .route(
             "/api/agents/:agent_id/files/:filename",
             get(get_agent_file).put(put_agent_file),
@@ -180,7 +186,10 @@ pub async fn run(
         .route("/api/runs", get(list_runs))
         .route("/api/sessions", get(list_sessions_api))
         .route("/api/logs/events", get(list_events))
-        .route("/api/chatroom/:team_id", get(get_chatroom))
+        .route(
+            "/api/chatroom/:team_id",
+            get(get_chatroom).post(post_chatroom),
+        )
         .route("/api/models", get(list_models))
         .route("/api/doctor", get(api_doctor))
         .route("/api/events/stream", get(stream_events))
@@ -665,13 +674,66 @@ async fn list_events(
 async fn get_chatroom(
     State(state): State<AppState>,
     AxumPath(team_id): AxumPath<String>,
-    Query(query): Query<LimitQuery>,
+    Query(query): Query<ChatroomQuery>,
 ) -> ApiResult<Json<Value>> {
-    let steps = state
+    let team_id = normalize_identifier(&team_id, "team id").map_err(internal_error)?;
+    let config = state.config.read().await;
+    if !config.teams.contains_key(&team_id) {
+        return Err((StatusCode::NOT_FOUND, format!("team not found: {team_id}")));
+    }
+    drop(config);
+
+    let messages = state
         .store
-        .list_chain_steps(&team_id, query.limit.unwrap_or(100))
+        .list_chatroom_messages(&team_id, query.limit.unwrap_or(100), query.since)
         .map_err(internal_error)?;
-    Ok(Json(json!({ "team_id": team_id, "steps": steps })))
+    Ok(Json(json!({ "team_id": team_id, "messages": messages })))
+}
+
+async fn post_chatroom(
+    State(state): State<AppState>,
+    AxumPath(team_id): AxumPath<String>,
+    Json(payload): Json<PostChatroomRequest>,
+) -> ApiResult<Json<Value>> {
+    let team_id = normalize_identifier(&team_id, "team id").map_err(internal_error)?;
+    let message = payload.message.trim();
+    if message.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "message must not be empty".to_string(),
+        ));
+    }
+
+    let config = state.config.read().await.clone();
+    let Some(team) = config.teams.get(&team_id).cloned() else {
+        return Err((StatusCode::NOT_FOUND, format!("team not found: {team_id}")));
+    };
+
+    let entry = state
+        .store
+        .record_chatroom_message(&team_id, "user", message)
+        .map_err(internal_error)?;
+
+    for agent_id in &team.agents {
+        enqueue_chatroom_message(&config, &team_id, agent_id, "user", message)
+            .await
+            .map_err(internal_error)?;
+    }
+
+    emit_server_event(
+        &state,
+        "chatroom_message_posted",
+        json!({
+            "message_id": entry.id,
+            "team_id": team_id,
+            "from_agent": "user",
+        }),
+    );
+
+    Ok(Json(json!({
+        "ok": true,
+        "message": entry,
+    })))
 }
 
 async fn stream_events(
@@ -704,7 +766,10 @@ async fn list_agent_files(
 ) -> ApiResult<Json<Value>> {
     let config = state.config.read().await;
     if !config.agents.contains_key(&agent_id) {
-        return Err((StatusCode::NOT_FOUND, format!("agent not found: {agent_id}")));
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("agent not found: {agent_id}"),
+        ));
     }
     let agent_root = config.resolve_agent_workdir(&agent_id);
     let mut files = vec![];
@@ -733,12 +798,13 @@ async fn get_agent_file(
 ) -> ApiResult<Json<Value>> {
     let config = state.config.read().await;
     if !config.agents.contains_key(&agent_id) {
-        return Err((StatusCode::NOT_FOUND, format!("agent not found: {agent_id}")));
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("agent not found: {agent_id}"),
+        ));
     }
     let path = resolve_workspace_file(&config, &agent_id, &filename)?;
-    let content = tokio::fs::read_to_string(&path)
-        .await
-        .unwrap_or_default();
+    let content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
     Ok(Json(json!({ "name": filename, "content": content })))
 }
 
@@ -749,7 +815,10 @@ async fn put_agent_file(
 ) -> ApiResult<Json<Value>> {
     let config = state.config.read().await;
     if !config.agents.contains_key(&agent_id) {
-        return Err((StatusCode::NOT_FOUND, format!("agent not found: {agent_id}")));
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("agent not found: {agent_id}"),
+        ));
     }
     let path = resolve_workspace_file(&config, &agent_id, &filename)?;
     if let Some(parent) = path.parent() {
@@ -973,7 +1042,9 @@ async fn api_doctor(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     let mut warnings: Vec<String> = vec![];
     if has_openai_agents {
         if !codex_auth.auth_file_exists {
-            warnings.push("OpenAI agents configured but codex is not logged in. Run 'codex login'.".into());
+            warnings.push(
+                "OpenAI agents configured but codex is not logged in. Run 'codex login'.".into(),
+            );
         } else if codex_auth.token_expired {
             warnings.push("Codex auth token expired. Run 'codex login' to refresh.".into());
         }

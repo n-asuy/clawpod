@@ -130,34 +130,53 @@ async fn handle_message(
                 match result {
                     VerifyResult::Approved => {
                         enqueue_pairing_response(
-                            config, "telegram", &recipient, &notice_id,
+                            config,
+                            "telegram",
+                            &recipient,
+                            &notice_id,
                             "Pairing approved. You can now send messages.",
-                        ).await?;
+                        )
+                        .await?;
                     }
                     VerifyResult::Expired => {
                         let pc = pairing::generate_code(
-                            config.pairing.code_length, config.pairing.code_ttl_secs,
+                            config.pairing.code_length,
+                            config.pairing.code_ttl_secs,
                         );
                         store.store_pairing_code(
-                            "telegram", &sender_id, &pc.code,
+                            "telegram",
+                            &sender_id,
+                            &pc.code,
                             &pc.expires_at.to_rfc3339(),
                         )?;
                         enqueue_pairing_response(
-                            config, "telegram", &recipient, &notice_id,
+                            config,
+                            "telegram",
+                            &recipient,
+                            &notice_id,
                             &format!("Code expired. Your new pairing code: {}", pc.code),
-                        ).await?;
+                        )
+                        .await?;
                     }
                     VerifyResult::LockedOut => {
                         enqueue_pairing_response(
-                            config, "telegram", &recipient, &notice_id,
+                            config,
+                            "telegram",
+                            &recipient,
+                            &notice_id,
                             "Too many failed attempts. Please try again later.",
-                        ).await?;
+                        )
+                        .await?;
                     }
                     VerifyResult::InvalidCode => {
                         enqueue_pairing_response(
-                            config, "telegram", &recipient, &notice_id,
+                            config,
+                            "telegram",
+                            &recipient,
+                            &notice_id,
                             "Invalid pairing code. Please check and try again.",
-                        ).await?;
+                        )
+                        .await?;
                     }
                 }
                 return Ok(());
@@ -175,10 +194,13 @@ async fn handle_message(
             )?;
             if registration == SenderAccessRegistration::PendingCreated {
                 let pc = pairing::generate_code(
-                    config.pairing.code_length, config.pairing.code_ttl_secs,
+                    config.pairing.code_length,
+                    config.pairing.code_ttl_secs,
                 );
                 store.store_pairing_code(
-                    "telegram", &sender_id, &pc.code,
+                    "telegram",
+                    &sender_id,
+                    &pc.code,
                     &pc.expires_at.to_rfc3339(),
                 )?;
                 enqueue_pairing_response(

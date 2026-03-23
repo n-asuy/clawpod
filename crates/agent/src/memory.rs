@@ -38,7 +38,9 @@ pub struct MemoryFolder {
 fn extract_frontmatter(content: &str) -> Option<&str> {
     let trimmed = content.trim_start();
     let rest = trimmed.strip_prefix("---")?;
-    let rest = rest.strip_prefix('\n').or_else(|| rest.strip_prefix("\r\n"))?;
+    let rest = rest
+        .strip_prefix('\n')
+        .or_else(|| rest.strip_prefix("\r\n"))?;
     let end = rest.find("\n---")?;
     Some(&rest[..end])
 }
