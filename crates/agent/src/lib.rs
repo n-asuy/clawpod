@@ -115,12 +115,13 @@ pub fn ensure_agent_workspace(
     agents: &HashMap<String, AgentConfig>,
     teams: &HashMap<String, TeamConfig>,
     root: &Path,
-    skills_source: Option<&Path>,
 ) -> Result<()> {
     fs::create_dir_all(root)
         .with_context(|| format!("failed to create agent root: {}", root.display()))?;
     fs::create_dir_all(root.join(".claude"))
         .with_context(|| format!("failed to create .claude dir: {}", root.display()))?;
+    fs::create_dir_all(root.join(".codex"))
+        .with_context(|| format!("failed to create .codex dir: {}", root.display()))?;
     fs::create_dir_all(root.join(".agents"))
         .with_context(|| format!("failed to create .agents dir: {}", root.display()))?;
     fs::create_dir_all(root.join("memory"))
@@ -131,36 +132,6 @@ pub fn ensure_agent_workspace(
         .with_context(|| format!("failed to create .clawpod dir: {}", root.display()))?;
     fs::create_dir_all(root.join(".clawpod").join("files"))
         .with_context(|| format!("failed to create files dir: {}", root.display()))?;
-    fs::create_dir_all(root.join(".agents").join("skills"))
-        .with_context(|| format!("failed to create skills dir: {}", root.display()))?;
-
-    // Copy skills from the global skills directory into .agents/skills/.
-    if let Some(src) = skills_source {
-        if src.is_dir() {
-            let dest_skills = root.join(".agents").join("skills");
-            if let Ok(entries) = fs::read_dir(src) {
-                for entry in entries.flatten() {
-                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                        let skill_name = entry.file_name();
-                        let target = dest_skills.join(&skill_name);
-                        // Always overwrite to keep skills up-to-date.
-                        let _ = fs::remove_dir_all(&target);
-                        copy_dir_all(&entry.path(), &target)?;
-                    }
-                }
-            }
-        }
-    }
-
-    // Copy .agents/skills into .claude/skills/ so that Claude CLI
-    // discovers skills natively from the working directory.
-    let agents_skills = root.join(".agents").join("skills");
-    let claude_skills = root.join(".claude").join("skills");
-    if agents_skills.is_dir() {
-        // Always overwrite to keep in sync.
-        let _ = fs::remove_dir_all(&claude_skills);
-        copy_dir_all(&agents_skills, &claude_skills)?;
-    }
 
     let agents_md = root.join("AGENTS.md");
     if !agents_md.exists() {
@@ -183,40 +154,6 @@ pub fn ensure_agent_workspace(
     Ok(())
 }
 
-/// Sync skills into `~/.codex/skills/` so that Codex CLI can discover them.
-/// Codex CLI only reads skills from its global config directory, not from the
-/// working directory. Each skill subdirectory in `skills_source` is copied
-/// into `~/.codex/skills/<name>`.
-pub fn ensure_codex_skills(skills_source: &Path) -> Result<()> {
-    let home = std::env::var("HOME").context("HOME not set")?;
-    let codex_home = PathBuf::from(home).join(".codex");
-    let codex_skills = codex_home.join("skills");
-    fs::create_dir_all(&codex_skills)
-        .with_context(|| format!("failed to create {}", codex_skills.display()))?;
-
-    if !skills_source.is_dir() {
-        return Ok(());
-    }
-
-    let entries = fs::read_dir(skills_source)
-        .with_context(|| format!("failed to read {}", skills_source.display()))?;
-
-    for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let skill_name = entry.file_name();
-        let target = codex_skills.join(&skill_name);
-
-        // Always overwrite to keep skills up-to-date.
-        let _ = fs::remove_dir_all(&target);
-        copy_dir_all(&entry.path(), &target)
-            .with_context(|| format!("failed to copy codex skill {}", target.display()))?;
-    }
-
-    Ok(())
-}
-
 pub fn ensure_session_workspace(agent_root: &Path, session_key: &str) -> Result<PathBuf> {
     let session_dir = agent_root.join("sessions").join(slugify(session_key));
     fs::create_dir_all(&session_dir)
@@ -229,6 +166,7 @@ pub fn ensure_session_workspace(agent_root: &Path, session_key: &str) -> Result<
     )?;
     link_or_copy(agent_root.join(".clawpod"), session_dir.join(".clawpod"))?;
     link_or_copy(agent_root.join(".claude"), session_dir.join(".claude"))?;
+    link_or_copy(agent_root.join(".codex"), session_dir.join(".codex"))?;
     link_or_copy(agent_root.join(".agents"), session_dir.join(".agents"))?;
     link_or_copy(agent_root.join("memory"), session_dir.join("memory"))?;
 
@@ -329,6 +267,7 @@ fn link_or_copy(src: PathBuf, dst: PathBuf) -> Result<()> {
     }
 }
 
+#[cfg(not(unix))]
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst).with_context(|| format!("failed to create dir: {}", dst.display()))?;
     for entry in
