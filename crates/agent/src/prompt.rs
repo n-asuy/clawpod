@@ -686,7 +686,7 @@ mod tests {
         agents.insert("bot".to_string(), make_agent("Bot", "sonnet"));
         let teams = HashMap::new();
 
-        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root, None).unwrap();
 
         let soul_path = root.join(".clawpod").join("SOUL.md");
         assert!(soul_path.exists(), "SOUL.md should be created on bootstrap");
@@ -710,14 +710,14 @@ mod tests {
         agents.insert("bot".to_string(), make_agent("Bot", "sonnet"));
         let teams = HashMap::new();
 
-        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root, None).unwrap();
 
         let soul_path = root.join(".clawpod").join("SOUL.md");
         let custom = "# Kurisu\n\nI am a mad scientist assistant.\n";
         fs::write(&soul_path, custom).unwrap();
 
         // Re-run bootstrap — should NOT overwrite customized file
-        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root, None).unwrap();
 
         let content = fs::read_to_string(&soul_path).unwrap();
         assert_eq!(content, custom, "customized SOUL.md must survive re-bootstrap");
@@ -731,7 +731,7 @@ mod tests {
         agents.insert("bot".to_string(), make_agent("Bot", "sonnet"));
         let teams = HashMap::new();
 
-        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root, None).unwrap();
 
         // Customize SOUL.md
         let soul_path = root.join(".clawpod").join("SOUL.md");
@@ -768,7 +768,7 @@ mod tests {
         agents.insert("bot".to_string(), make_agent("Bot", "sonnet"));
         let teams = HashMap::new();
 
-        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root, None).unwrap();
 
         let soul_path = root.join(".clawpod").join("SOUL.md");
         fs::write(&soul_path, "# Kurisu\n\nMad scientist persona.").unwrap();

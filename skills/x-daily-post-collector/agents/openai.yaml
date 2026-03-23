@@ -1,0 +1,4 @@
+interface:
+  display_name: "X Daily Post Collector"
+  short_description: "Collect all daily X posts and verify translations"
+  default_prompt: "Use $x-daily-post-collector to collect all today's posts from my CRM accounts, rebuild the daily summary, and run translation completion checks."

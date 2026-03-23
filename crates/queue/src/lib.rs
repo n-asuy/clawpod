@@ -344,6 +344,7 @@ impl QueueProcessor {
             &self.config.agents,
             &self.config.teams,
             &agent_root,
+            self.config.skills_dir().as_deref(),
         )?;
         if clear_reset_flag(&agent_root)? {
             self.store.clear_agent_sessions(&agent_id)?;

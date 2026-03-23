@@ -1,0 +1,4 @@
+interface:
+  display_name: "X Follow Analysis"
+  short_description: "Analyze X following and suggest unfollow candidates"
+  default_prompt: "Use $x-follow-analysis to collect my X following list, score accounts, and output keep/review/unfollow buckets."
