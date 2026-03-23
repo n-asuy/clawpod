@@ -226,6 +226,7 @@ async fn main() -> Result<()> {
                 peer_id,
                 account_id,
                 pre_routed_agent: agent,
+                from_agent: None,
                 files: vec![],
                 chain_depth: 0,
             };

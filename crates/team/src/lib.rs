@@ -45,6 +45,7 @@ pub async fn execute_team_chain(
     let mut current_agent = input.start_agent_id;
     let mut current_message = input.initial_message;
     let mut continue_session = input.continue_session;
+    let mut prev_agent: Option<String> = None;
 
     for _ in 0..input.max_chain_steps {
         let agent = input
@@ -73,6 +74,7 @@ pub async fn execute_team_chain(
         let handoffs = extract_teammate_mentions(
             &response,
             &current_agent,
+            prev_agent.as_deref(),
             &input.team_id,
             &input.teams,
             &input.agents,
@@ -95,6 +97,7 @@ pub async fn execute_team_chain(
 
         if handoffs.len() == 1 {
             let mention = handoffs[0].clone();
+            prev_agent = Some(current_agent.clone());
             current_agent = mention.teammate_id;
             current_message = format!(
                 "[Message from teammate @{}]:\n{}",
