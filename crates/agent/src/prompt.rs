@@ -7,7 +7,6 @@ use anyhow::Result;
 use domain::{AgentConfig, TeamConfig};
 
 use crate::memory::MemorySection;
-use crate::skills::SkillsSection;
 
 /// Maximum characters per workspace file injected into the system prompt.
 /// Matches zeroclaw's budget to prevent prompt bloat.
@@ -55,7 +54,6 @@ impl SystemPromptBuilder {
                 Box::new(TeammatesSection),
                 Box::new(MemorySection),
                 Box::new(IdentitySection),
-                Box::new(SkillsSection),
                 Box::new(UserPromptSection),
             ],
         }

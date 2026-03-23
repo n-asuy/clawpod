@@ -1,6 +1,5 @@
 pub mod memory;
 pub mod prompt;
-pub mod skills;
 
 use std::collections::HashMap;
 use std::fs;
@@ -11,7 +10,6 @@ use domain::{AgentConfig, TeamConfig};
 
 pub use memory::{MemorySection, load_memory_index};
 pub use prompt::{PromptContext, PromptSection, SystemPromptBuilder};
-pub use skills::{SkillEntry, SkillsSection};
 
 const SOUL_TEMPLATE: &str = r#"# [Your Name]
 
@@ -130,10 +128,21 @@ pub fn ensure_agent_workspace(
         .with_context(|| format!("failed to create sessions dir: {}", root.display()))?;
     fs::create_dir_all(root.join(".clawpod"))
         .with_context(|| format!("failed to create .clawpod dir: {}", root.display()))?;
-    fs::create_dir_all(root.join(".clawpod").join("skills"))
-        .with_context(|| format!("failed to create skills dir: {}", root.display()))?;
     fs::create_dir_all(root.join(".clawpod").join("files"))
         .with_context(|| format!("failed to create files dir: {}", root.display()))?;
+    fs::create_dir_all(root.join(".agents").join("skills"))
+        .with_context(|| format!("failed to create skills dir: {}", root.display()))?;
+
+    // Symlink .claude/skills -> ../.agents/skills so that Claude CLI
+    // discovers skills natively. Codex CLI discovers .agents/skills/ directly.
+    let claude_skills_link = root.join(".claude").join("skills");
+    if fs::symlink_metadata(&claude_skills_link).is_err() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs as unix_fs;
+            let _ = unix_fs::symlink("../.agents/skills", &claude_skills_link);
+        }
+    }
 
     let agents_md = root.join("AGENTS.md");
     if !agents_md.exists() {
