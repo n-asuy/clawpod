@@ -473,6 +473,231 @@ Useful commands on the server:
   journalctl -u clawpod -f      # live logs
 ```
 
+## KasmVNC (Virtual Display + Browser Visualization)
+
+エージェントがagent-browser経由で操作するChromeの画面をリモートから確認するため、KasmVNCをセットアップする。KasmVNCはVNCサーバー・Webクライアント・仮想ディスプレイを一体化したweb-nativeなリモートデスクトップ。
+
+### KasmVNC Install
+
+```bash
+ssh root@<ip> "wget -q 'https://github.com/kasmtech/KasmVNC/releases/download/v1.3.4/kasmvncserver_noble_1.3.4_amd64.deb' -O /tmp/kasmvnc.deb && \
+  apt-get install -y /tmp/kasmvnc.deb && \
+  apt-get install -y ssl-cert"
+```
+
+### Google Chrome Install
+
+```bash
+ssh root@<ip> "wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
+  apt-get install -y /tmp/chrome.deb"
+```
+
+### agent-browser Install
+
+```bash
+ssh root@<ip> "npm install -g agent-browser"
+```
+
+### VNC Password
+
+ユーザーにVNCパスワードを確認してから設定する:
+
+```bash
+ssh root@<ip> "mkdir -p /root/.vnc && \
+  echo -e '<password>\n<password>\n' | kasmvncpasswd -u root -w /root/.vnc/kasmpasswd && \
+  cp /root/.vnc/kasmpasswd /root/.kasmpasswd && \
+  chmod 600 /root/.kasmpasswd"
+```
+
+### KasmVNC Config
+
+```bash
+ssh root@<ip> "cat > /root/.vnc/kasmvnc.yaml << 'EOF'
+desktop:
+  resolution:
+    width: 1280
+    height: 720
+  allow_resize: true
+
+network:
+  protocol: http
+  websocket_port: 6901
+  ssl:
+    require_ssl: false
+  udp:
+    public_ip: auto
+
+runtime_configuration:
+  allow_client_to_override_kasm_server_settings: true
+  allow_override_standard_vnc_server_settings: true
+
+logging:
+  log_writer_name: all
+EOF"
+```
+
+### Desktop Environment
+
+ユーザーに確認して分岐する:
+
+- **A: XFCE**（推奨） — パネル・壁紙付きのフルデスクトップ。操作性重視。
+- **B: openbox** — 最小限のWM。メモリ消費が最小でヘッドレス用途向け。
+
+#### A: XFCE
+
+```bash
+ssh root@<ip> "apt-get install -y xfce4 xfce4-terminal dbus-x11"
+```
+
+```bash
+ssh root@<ip> "cat > /root/.vnc/xstartup << 'EOF'
+#!/bin/bash
+export XDG_SESSION_TYPE=x11
+startxfce4 &
+EOF
+chmod +x /root/.vnc/xstartup && \
+  touch /root/.vnc/.de-was-selected"
+```
+
+#### B: openbox
+
+```bash
+ssh root@<ip> "apt-get install -y openbox"
+```
+
+```bash
+ssh root@<ip> "cat > /root/.vnc/xstartup << 'EOF'
+#!/bin/bash
+export XDG_SESSION_TYPE=x11
+openbox-session &
+EOF
+chmod +x /root/.vnc/xstartup && \
+  touch /root/.vnc/.de-was-selected"
+```
+
+### KasmVNC systemd Service
+
+```bash
+ssh root@<ip> "cat > /etc/systemd/system/kasmvnc.service << 'EOF'
+[Unit]
+Description=KasmVNC virtual desktop
+After=network.target
+
+[Service]
+Type=forking
+User=root
+ExecStartPre=/usr/bin/bash -c '/usr/bin/vncserver -kill :1 2>/dev/null || true'
+ExecStart=/usr/bin/vncserver :1 -geometry 1280x720 -depth 24 -websocketPort 6901
+ExecStop=/usr/bin/vncserver -kill :1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable kasmvnc.service && systemctl start kasmvnc.service"
+```
+
+確認:
+
+```bash
+ssh root@<ip> "systemctl status kasmvnc --no-pager && ss -tlnp | grep 6901"
+```
+
+`Active: active (running)` かつポート6901がLISTENしていれば成功。
+
+### DISPLAY=:1 Integration with ClawPod
+
+ClawPodのsystemdサービスに`DISPLAY=:1`を追加し、子プロセス（claude CLI → agent-browser → Chrome）がKasmVNCのXvncディスプレイに描画するようにする:
+
+```bash
+ssh root@<ip> "sed -i '/EnvironmentFile=/i Environment=DISPLAY=:1' /etc/systemd/system/clawpod.service && \
+  systemctl daemon-reload && systemctl restart clawpod"
+```
+
+確認:
+
+```bash
+ssh root@<ip> "cat /proc/\$(pgrep -f 'clawpod daemon' | head -1)/environ | tr '\0' '\n' | grep DISPLAY"
+```
+
+`DISPLAY=:1` が表示されれば成功。
+
+> **重要**: この設定をしないとagent-browserはChromeをヘッドレスで起動し、KasmVNC画面には何も表示されない。ClawPodが見ている画面とKasmVNCで見る画面を一致させるにはこの統合設定が必須。
+
+> **Note**: KasmVNC（kasmvnc.service）はClawPodより先に起動している必要がある。問題発生時は `systemctl status kasmvnc` でDISPLAY :1の稼働を確認する。
+
+### agent-browser Skill Deploy
+
+エージェントのワークスペースにagent-browserスキルを配置する。agent-browserのSKILL.mdをai-workspaceリポジトリからコピーするか、手動で作成する:
+
+```bash
+ssh root@<ip> "mkdir -p /root/.clawpod/workspace/<agent>/sessions/<session>/.claude/skills/agent-browser/scripts"
+```
+
+> **Note**: agent-browserスキルのstart_chrome_cdp_profile.shは `.claude/skills/agent-browser/scripts/` に配置される必要がある。claude CLIのスキル探索は `.claude/skills/` を参照する。
+
+### Access via SSH Tunnel
+
+```
+ssh -N -L 6901:127.0.0.1:6901 root@<ip>
+```
+
+ブラウザで `https://localhost:6901` を開く。ユーザー名: `root`、パスワード: 設定したVNCパスワード。
+
+### Cloudflare Tunnel (Optional)
+
+SSHトンネル不要でKasmVNCに外部アクセスするため、Cloudflare Tunnelを使用できる。
+
+#### cloudflared Install
+
+```bash
+ssh root@<ip> "curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg && \
+  echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared noble main' > /etc/apt/sources.list.d/cloudflared.list && \
+  apt-get update -qq && apt-get install -y cloudflared"
+```
+
+#### Tunnel Setup
+
+```bash
+ssh root@<ip> "cloudflared tunnel login"
+```
+
+ブラウザで認証URLを開き、対象ドメインを選択する。
+
+```bash
+ssh root@<ip> "cloudflared tunnel create clawpod-vnc && \
+  cloudflared tunnel route dns clawpod-vnc <hostname>"
+```
+
+> **Note**: 既存のDNSレコードがある場合は先にCloudflareダッシュボードで削除する。
+
+#### Tunnel Config
+
+```bash
+ssh root@<ip> "cat > /root/.cloudflared/config.yml << 'EOF'
+tunnel: <tunnel-id>
+credentials-file: /root/.cloudflared/<tunnel-id>.json
+
+ingress:
+  - hostname: <hostname>
+    service: https://localhost:6901
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404
+EOF"
+```
+
+- `noTLSVerify: true`: KasmVNCのsnakeoil証明書を許容（Cloudflare Edge側でSSL終端するため安全）
+
+#### cloudflared systemd Service
+
+```bash
+ssh root@<ip> "cloudflared service install && systemctl enable cloudflared && systemctl start cloudflared"
+```
+
+> **Note**: cloudflaredのsystemd設定は `/etc/cloudflared/config.yml` にコピーされる。設定変更時は `/etc/cloudflared/config.yml` を編集して `systemctl restart cloudflared`。
+
 ## Update Workflow
 
 For subsequent updates after initial deployment:
