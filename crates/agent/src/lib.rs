@@ -115,6 +115,7 @@ pub fn ensure_agent_workspace(
     agents: &HashMap<String, AgentConfig>,
     teams: &HashMap<String, TeamConfig>,
     root: &Path,
+    skills_source: Option<&Path>,
 ) -> Result<()> {
     fs::create_dir_all(root)
         .with_context(|| format!("failed to create agent root: {}", root.display()))?;
@@ -132,6 +133,30 @@ pub fn ensure_agent_workspace(
         .with_context(|| format!("failed to create files dir: {}", root.display()))?;
     fs::create_dir_all(root.join(".agents").join("skills"))
         .with_context(|| format!("failed to create skills dir: {}", root.display()))?;
+
+    // Populate .agents/skills/ from the global skills directory.
+    // Each subdirectory in skills_source is symlinked into .agents/skills/<name>.
+    if let Some(src) = skills_source {
+        if src.is_dir() {
+            let dest_skills = root.join(".agents").join("skills");
+            if let Ok(entries) = fs::read_dir(src) {
+                for entry in entries.flatten() {
+                    if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        let skill_name = entry.file_name();
+                        let link_path = dest_skills.join(&skill_name);
+                        if fs::symlink_metadata(&link_path).is_ok() {
+                            continue;
+                        }
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs as unix_fs;
+                            let _ = unix_fs::symlink(entry.path(), &link_path);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Symlink .claude/skills -> ../.agents/skills so that Claude CLI
     // discovers skills natively. Codex CLI discovers .agents/skills/ directly.

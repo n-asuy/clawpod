@@ -78,6 +78,8 @@ pub struct DaemonConfig {
     pub workspace_dir: String,
     pub poll_interval_ms: u64,
     pub max_concurrent_runs: usize,
+    #[serde(default)]
+    pub skills_dir: Option<String>,
 }
 
 impl Default for DaemonConfig {
@@ -87,6 +89,7 @@ impl Default for DaemonConfig {
             workspace_dir: "~/.clawpod/workspace".to_string(),
             poll_interval_ms: 1000,
             max_concurrent_runs: 4,
+            skills_dir: None,
         }
     }
 }
@@ -489,6 +492,10 @@ impl RuntimeConfig {
 
     pub fn daemon_stderr_path(&self) -> PathBuf {
         self.home_dir().join("logs").join("daemon.stderr.log")
+    }
+
+    pub fn skills_dir(&self) -> Option<PathBuf> {
+        self.daemon.skills_dir.as_ref().map(|s| expand_tilde(s))
     }
 
     pub fn resolve_agent_workdir(&self, agent_id: &str) -> PathBuf {
