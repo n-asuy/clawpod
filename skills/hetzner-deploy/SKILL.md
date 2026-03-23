@@ -637,66 +637,29 @@ ssh root@<ip> "mkdir -p /root/.clawpod/workspace/<agent>/sessions/<session>/.cla
 
 > **Note**: agent-browserスキルのstart_chrome_cdp_profile.shは `.claude/skills/agent-browser/scripts/` に配置される必要がある。claude CLIのスキル探索は `.claude/skills/` を参照する。
 
-### Access via SSH Tunnel
+### Tailscale Serve (Remote Access)
 
-```
-ssh -N -L 6901:127.0.0.1:6901 root@<ip>
-```
-
-ブラウザで `https://localhost:6901` を開く。ユーザー名: `root`、パスワード: 設定したVNCパスワード。
-
-### Cloudflare Tunnel (Optional)
-
-SSHトンネル不要でKasmVNCに外部アクセスするため、Cloudflare Tunnelを使用できる。
-
-#### cloudflared Install
+Tailscale Serveで6901ポートをtailnet内に公開する。Office(3777)と同じホスト名でポート違いでアクセス可能:
 
 ```bash
-ssh root@<ip> "curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg && \
-  echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared noble main' > /etc/apt/sources.list.d/cloudflared.list && \
-  apt-get update -qq && apt-get install -y cloudflared"
+ssh root@<ip> "tailscale serve --bg --tcp 6901 tcp://localhost:6901"
 ```
 
-#### Tunnel Setup
+確認:
 
 ```bash
-ssh root@<ip> "cloudflared tunnel login"
+ssh root@<ip> "tailscale serve status"
 ```
 
-ブラウザで認証URLを開き、対象ドメインを選択する。
+アクセス: `https://<tailscale-hostname>:6901`
 
-```bash
-ssh root@<ip> "cloudflared tunnel create clawpod-vnc && \
-  cloudflared tunnel route dns clawpod-vnc <hostname>"
-```
+ユーザー名: `root`、パスワード: 設定したVNCパスワード。
 
-> **Note**: 既存のDNSレコードがある場合は先にCloudflareダッシュボードで削除する。
-
-#### Tunnel Config
-
-```bash
-ssh root@<ip> "cat > /root/.cloudflared/config.yml << 'EOF'
-tunnel: <tunnel-id>
-credentials-file: /root/.cloudflared/<tunnel-id>.json
-
-ingress:
-  - hostname: <hostname>
-    service: https://localhost:6901
-    originRequest:
-      noTLSVerify: true
-  - service: http_status:404
-EOF"
-```
-
-- `noTLSVerify: true`: KasmVNCのsnakeoil証明書を許容（Cloudflare Edge側でSSL終端するため安全）
-
-#### cloudflared systemd Service
-
-```bash
-ssh root@<ip> "cloudflared service install && systemctl enable cloudflared && systemctl start cloudflared"
-```
-
-> **Note**: cloudflaredのsystemd設定は `/etc/cloudflared/config.yml` にコピーされる。設定変更時は `/etc/cloudflared/config.yml` を編集して `systemctl restart cloudflared`。
+> **Fallback (SSH tunnel)**:
+> ```
+> ssh -N -L 6901:127.0.0.1:6901 root@<ip>
+> ```
+> ブラウザで `https://localhost:6901` を開く。
 
 ## Update Workflow
 
