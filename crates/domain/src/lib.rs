@@ -318,6 +318,18 @@ pub struct ChatroomPost {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatRunView {
+    pub id: i64,
+    pub agent_id: String,
+    pub prompt: String,
+    pub output: Option<String>,
+    pub status: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub duration_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MentionHandoff {
     pub teammate_id: String,
     pub message: String,

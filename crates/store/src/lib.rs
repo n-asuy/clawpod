@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use domain::{ChatroomMessageView, RunStatus, TeamChainStepView};
+use domain::{ChatroomMessageView, HeartbeatRunView, RunStatus, TeamChainStepView};
 pub use pairing::VerifyResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -60,6 +60,8 @@ struct StoreSnapshot {
     #[serde(default)]
     chatroom_messages: Vec<ChatroomMessageRecord>,
     #[serde(default)]
+    heartbeat_runs: Vec<HeartbeatRunRecord>,
+    #[serde(default)]
     events: Vec<EventRecord>,
     #[serde(default)]
     sessions: HashMap<String, SessionRecord>,
@@ -69,6 +71,8 @@ struct StoreSnapshot {
     next_event_id: i64,
     #[serde(default)]
     next_chatroom_message_id: i64,
+    #[serde(default)]
+    next_heartbeat_run_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +126,18 @@ struct ChatroomMessageRecord {
     from_agent: String,
     message: String,
     created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HeartbeatRunRecord {
+    id: i64,
+    agent_id: String,
+    prompt: String,
+    output: Option<String>,
+    status: String,
+    started_at: String,
+    finished_at: String,
+    duration_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -359,6 +375,77 @@ impl StateStore {
                 from_agent: record.from_agent.clone(),
                 message: record.message.clone(),
                 created_at: record.created_at.clone(),
+            })
+            .collect())
+    }
+
+    pub fn record_heartbeat_run(
+        &self,
+        agent_id: &str,
+        prompt: &str,
+        output: Option<&str>,
+        status: &str,
+        started_at: &str,
+        finished_at: &str,
+        duration_ms: i64,
+    ) -> Result<HeartbeatRunView> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        snapshot.next_heartbeat_run_id += 1;
+        let record = HeartbeatRunRecord {
+            id: snapshot.next_heartbeat_run_id,
+            agent_id: agent_id.to_string(),
+            prompt: prompt.to_string(),
+            output: output.map(ToString::to_string),
+            status: status.to_string(),
+            started_at: started_at.to_string(),
+            finished_at: finished_at.to_string(),
+            duration_ms,
+        };
+        snapshot.heartbeat_runs.push(record.clone());
+        self.persist_locked(&snapshot)?;
+        Ok(HeartbeatRunView {
+            id: record.id,
+            agent_id: record.agent_id,
+            prompt: record.prompt,
+            output: record.output,
+            status: record.status,
+            started_at: record.started_at,
+            finished_at: record.finished_at,
+            duration_ms: record.duration_ms,
+        })
+    }
+
+    pub fn list_heartbeat_runs(
+        &self,
+        limit: usize,
+        agent_id: Option<&str>,
+    ) -> Result<Vec<HeartbeatRunView>> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        let mut runs: Vec<_> = snapshot
+            .heartbeat_runs
+            .iter()
+            .filter(|record| agent_id.map_or(true, |value| record.agent_id == value))
+            .cloned()
+            .collect();
+        runs.sort_by(|a, b| {
+            b.finished_at
+                .cmp(&a.finished_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        runs.truncate(limit);
+        Ok(runs
+            .into_iter()
+            .map(|record| HeartbeatRunView {
+                id: record.id,
+                agent_id: record.agent_id,
+                prompt: record.prompt,
+                output: record.output,
+                status: record.status,
+                started_at: record.started_at,
+                finished_at: record.finished_at,
+                duration_ms: record.duration_ms,
             })
             .collect())
     }
@@ -800,6 +887,12 @@ impl StoreSnapshot {
             .map(|message| message.id)
             .max()
             .unwrap_or_default();
+        self.next_heartbeat_run_id = self
+            .heartbeat_runs
+            .iter()
+            .map(|run| run.id)
+            .max()
+            .unwrap_or_default();
     }
 }
 
@@ -950,6 +1043,46 @@ mod tests {
         assert_eq!(messages[0].id, first.id);
         assert_eq!(messages[1].id, second.id);
         assert_eq!(messages[1].from_agent, "reviewer");
+    }
+
+    #[test]
+    fn heartbeat_runs_roundtrip_in_reverse_chronological_order() {
+        let path = temp_state_path("heartbeat_runs");
+        let store = StateStore::new(&path).expect("store");
+
+        store
+            .record_heartbeat_run(
+                "default",
+                "check backlog",
+                Some("all clear"),
+                "ok",
+                "2025-01-01T00:00:00Z",
+                "2025-01-01T00:00:01Z",
+                1000,
+            )
+            .expect("first run");
+        store
+            .record_heartbeat_run(
+                "reviewer",
+                "review queue",
+                Some("two pending"),
+                "ok",
+                "2025-01-01T00:05:00Z",
+                "2025-01-01T00:05:01Z",
+                900,
+            )
+            .expect("second run");
+
+        let runs = store.list_heartbeat_runs(10, None).expect("list runs");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].agent_id, "reviewer");
+        assert_eq!(runs[1].agent_id, "default");
+
+        let filtered = store
+            .list_heartbeat_runs(10, Some("default"))
+            .expect("list filtered");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].prompt, "check backlog");
     }
 
     #[test]
