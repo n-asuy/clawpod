@@ -1,0 +1,4 @@
+interface:
+  display_name: "Competitor Profile Maintenance"
+  short_description: "Maintain profile dossiers from browser captures"
+  default_prompt: "Use $competitor-profile-maintenance to collect fresh raw captures and refresh index metadata under 02_全社_競合・ベンチマーク/プロファイル."

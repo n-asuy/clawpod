@@ -1,0 +1,33 @@
+{
+  "always_keep_handles": [
+    "example_client_account",
+    "example_partner_account"
+  ],
+  "visibility_target_handles": [
+    "example_big_creator",
+    "example_industry_voice"
+  ],
+  "always_unfollow_handles": [
+    "example_growth_only_account"
+  ],
+  "keep_keywords": [
+    "security",
+    "ciso",
+    "founder",
+    "採用",
+    "導入"
+  ],
+  "visibility_keywords": [
+    "creator",
+    "growth",
+    "インフルエンサー",
+    "マーケ"
+  ],
+  "unfollow_keywords": [
+    "giveaway",
+    "airdrop",
+    "bot"
+  ],
+  "protect_follows_you": true,
+  "keep_verified": false
+}

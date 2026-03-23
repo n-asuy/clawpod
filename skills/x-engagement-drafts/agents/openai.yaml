@@ -1,0 +1,4 @@
+interface:
+  display_name: "X Engagement Drafts"
+  short_description: "Generate quote-RT and reply drafts from daily posts"
+  default_prompt: "Use $x-engagement-drafts to generate Japanese and English quote-RT and reply drafts from today's collected X posts."
