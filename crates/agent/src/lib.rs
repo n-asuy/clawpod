@@ -134,8 +134,7 @@ pub fn ensure_agent_workspace(
     fs::create_dir_all(root.join(".agents").join("skills"))
         .with_context(|| format!("failed to create skills dir: {}", root.display()))?;
 
-    // Populate .agents/skills/ from the global skills directory.
-    // Each subdirectory in skills_source is symlinked into .agents/skills/<name>.
+    // Copy skills from the global skills directory into .agents/skills/.
     if let Some(src) = skills_source {
         if src.is_dir() {
             let dest_skills = root.join(".agents").join("skills");
@@ -143,30 +142,24 @@ pub fn ensure_agent_workspace(
                 for entry in entries.flatten() {
                     if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                         let skill_name = entry.file_name();
-                        let link_path = dest_skills.join(&skill_name);
-                        if fs::symlink_metadata(&link_path).is_ok() {
-                            continue;
-                        }
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs as unix_fs;
-                            let _ = unix_fs::symlink(entry.path(), &link_path);
-                        }
+                        let target = dest_skills.join(&skill_name);
+                        // Always overwrite to keep skills up-to-date.
+                        let _ = fs::remove_dir_all(&target);
+                        copy_dir_all(&entry.path(), &target)?;
                     }
                 }
             }
         }
     }
 
-    // Symlink .claude/skills -> ../.agents/skills so that Claude CLI
+    // Copy .agents/skills into .claude/skills/ so that Claude CLI
     // discovers skills natively from the working directory.
-    let claude_skills_link = root.join(".claude").join("skills");
-    if fs::symlink_metadata(&claude_skills_link).is_err() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs as unix_fs;
-            let _ = unix_fs::symlink("../.agents/skills", &claude_skills_link);
-        }
+    let agents_skills = root.join(".agents").join("skills");
+    let claude_skills = root.join(".claude").join("skills");
+    if agents_skills.is_dir() {
+        // Always overwrite to keep in sync.
+        let _ = fs::remove_dir_all(&claude_skills);
+        copy_dir_all(&agents_skills, &claude_skills)?;
     }
 
     let agents_md = root.join("AGENTS.md");
@@ -192,7 +185,7 @@ pub fn ensure_agent_workspace(
 
 /// Sync skills into `~/.codex/skills/` so that Codex CLI can discover them.
 /// Codex CLI only reads skills from its global config directory, not from the
-/// working directory. Each skill subdirectory in `skills_source` is symlinked
+/// working directory. Each skill subdirectory in `skills_source` is copied
 /// into `~/.codex/skills/<name>`.
 pub fn ensure_codex_skills(skills_source: &Path) -> Result<()> {
     let home = std::env::var("HOME").context("HOME not set")?;
@@ -213,26 +206,12 @@ pub fn ensure_codex_skills(skills_source: &Path) -> Result<()> {
             continue;
         }
         let skill_name = entry.file_name();
-        let link_path = codex_skills.join(&skill_name);
+        let target = codex_skills.join(&skill_name);
 
-        // If a symlink already points to the correct target, skip.
-        if let Ok(target) = fs::read_link(&link_path) {
-            if target == entry.path() {
-                continue;
-            }
-            // Stale symlink or wrong target — remove it.
-            let _ = fs::remove_file(&link_path);
-        } else if fs::symlink_metadata(&link_path).is_ok() {
-            // Exists but is not a symlink (real directory) — remove recursively.
-            let _ = fs::remove_dir_all(&link_path);
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs as unix_fs;
-            unix_fs::symlink(entry.path(), &link_path)
-                .with_context(|| format!("failed to symlink codex skill {}", link_path.display()))?;
-        }
+        // Always overwrite to keep skills up-to-date.
+        let _ = fs::remove_dir_all(&target);
+        copy_dir_all(&entry.path(), &target)
+            .with_context(|| format!("failed to copy codex skill {}", target.display()))?;
     }
 
     Ok(())
@@ -350,7 +329,6 @@ fn link_or_copy(src: PathBuf, dst: PathBuf) -> Result<()> {
     }
 }
 
-#[cfg(not(unix))]
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst).with_context(|| format!("failed to create dir: {}", dst.display()))?;
     for entry in
