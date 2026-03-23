@@ -39,6 +39,7 @@ pub struct EnqueueMessage {
     pub peer_id: String,
     pub account_id: Option<String>,
     pub pre_routed_agent: Option<String>,
+    pub from_agent: Option<String>,
     pub files: Vec<String>,
     #[serde(default)]
     pub chain_depth: u32,
@@ -55,6 +56,8 @@ struct IncomingQueueEnvelope {
     message_id: String,
     #[serde(default)]
     agent: Option<String>,
+    #[serde(default)]
+    from_agent: Option<String>,
     #[serde(default)]
     account_id: Option<String>,
     #[serde(default)]
@@ -402,6 +405,7 @@ impl QueueProcessor {
                     let handoffs = routing::extract_teammate_mentions(
                         &text,
                         &agent_id,
+                        event.from_agent.as_deref(),
                         tid,
                         &self.config.teams,
                         &self.config.agents,
@@ -459,6 +463,7 @@ impl QueueProcessor {
                                 peer_id: event.peer_id.clone(),
                                 account_id: event.account_id.clone(),
                                 pre_routed_agent: Some(mention.teammate_id.clone()),
+                                from_agent: Some(agent_id.clone()),
                                 files: vec![],
                                 chain_depth: next_depth,
                             },
@@ -712,6 +717,7 @@ impl QueueProcessor {
             account_id: envelope.account_id.clone(),
             files: envelope.files.clone(),
             pre_routed_agent: envelope.agent.clone(),
+            from_agent: envelope.from_agent.clone(),
             chain_depth: envelope.chain_depth,
         })
     }
@@ -900,6 +906,7 @@ pub async fn enqueue_message(config: &RuntimeConfig, msg: EnqueueMessage) -> Res
         "timestamp": msg.timestamp_ms,
         "message_id": msg.message_id,
         "agent": msg.pre_routed_agent,
+        "from_agent": msg.from_agent,
         "account_id": msg.account_id,
         "chat_type": chat_type_to_str(msg.chat_type),
         "peer_id": msg.peer_id,
@@ -1180,6 +1187,7 @@ mod tests {
             peer_id: "bob_1".to_string(),
             account_id: None,
             pre_routed_agent: Some("tester".to_string()),
+            from_agent: None,
             files: vec![],
             chain_depth: 5,
         };

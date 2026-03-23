@@ -206,6 +206,7 @@ async fn handle_message(
             peer_id: message.chat.id.0.to_string(),
             account_id: None,
             pre_routed_agent: None,
+            from_agent: None,
             files,
             chain_depth: 0,
         },

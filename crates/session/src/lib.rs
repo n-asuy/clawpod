@@ -65,6 +65,7 @@ mod tests {
             account_id: Some("work".to_string()),
             files: vec![],
             pre_routed_agent: None,
+            from_agent: None,
             chain_depth: 0,
         }
     }
