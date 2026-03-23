@@ -672,6 +672,7 @@ async fn handle_message_event(
             peer_id,
             account_id: None,
             pre_routed_agent: None,
+            from_agent: None,
             files,
             chain_depth: 0,
         },

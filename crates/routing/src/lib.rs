@@ -147,6 +147,7 @@ pub fn find_team_for_agent(agent_id: &str, teams: &HashMap<String, TeamConfig>) 
 pub fn extract_teammate_mentions(
     response: &str,
     current_agent_id: &str,
+    from_agent: Option<&str>,
     team_id: &str,
     teams: &HashMap<String, TeamConfig>,
     agents: &HashMap<String, AgentConfig>,
@@ -166,7 +167,7 @@ pub fn extract_teammate_mentions(
             .map(|m| m.as_str().to_lowercase())
             .unwrap_or_default();
 
-        if !is_valid_teammate(&teammate_id, current_agent_id, team, agents) {
+        if !is_valid_teammate(&teammate_id, current_agent_id, from_agent, team, agents) {
             continue;
         }
 
@@ -196,7 +197,7 @@ pub fn extract_teammate_mentions(
             .map(|m| m.as_str().to_lowercase())
             .unwrap_or_default();
 
-        if is_valid_teammate(&teammate_id, current_agent_id, team, agents) {
+        if is_valid_teammate(&teammate_id, current_agent_id, from_agent, team, agents) {
             return vec![MentionHandoff {
                 teammate_id,
                 message: response.to_string(),
@@ -210,12 +211,18 @@ pub fn extract_teammate_mentions(
 fn is_valid_teammate(
     mentioned_id: &str,
     current_agent_id: &str,
+    from_agent: Option<&str>,
     team: &TeamConfig,
     agents: &HashMap<String, AgentConfig>,
 ) -> bool {
-    mentioned_id != current_agent_id
-        && team.agents.iter().any(|id| id == mentioned_id)
-        && agents.contains_key(mentioned_id)
+    if mentioned_id == current_agent_id {
+        return false;
+    }
+    // Prevent ping-pong: reject mentions back to the agent that sent us this message
+    if from_agent == Some(mentioned_id) {
+        return false;
+    }
+    team.agents.iter().any(|id| id == mentioned_id) && agents.contains_key(mentioned_id)
 }
 
 #[cfg(test)]
@@ -281,6 +288,7 @@ mod tests {
         let mentions = extract_teammate_mentions(
             "done [@reviewer: review this patch]",
             "default",
+            None,
             "dev",
             &teams,
             &agents,
@@ -288,5 +296,69 @@ mod tests {
         assert_eq!(mentions.len(), 1);
         assert_eq!(mentions[0].teammate_id, "reviewer");
         assert_eq!(mentions[0].message, "review this patch");
+    }
+
+    #[test]
+    fn rejects_mention_back_to_sender() {
+        let agents = sample_agents();
+        let teams = sample_teams();
+        // reviewer received a message from default, tries to mention default back
+        let mentions = extract_teammate_mentions(
+            "[@default: here is my review]",
+            "reviewer",
+            Some("default"),
+            "dev",
+            &teams,
+            &agents,
+        );
+        assert!(mentions.is_empty(), "mention back to from_agent should be rejected");
+    }
+
+    #[test]
+    fn allows_mention_to_third_party() {
+        let mut agents = sample_agents();
+        agents.insert(
+            "tester".to_string(),
+            AgentConfig {
+                name: "Tester".to_string(),
+                provider: ProviderKind::Anthropic,
+                model: "claude-sonnet-4-5".to_string(),
+                provider_id: None,
+                system_prompt: None,
+                prompt_file: None,
+                think_level: None,
+            },
+        );
+        let mut teams = sample_teams();
+        teams.get_mut("dev").unwrap().agents.push("tester".to_string());
+
+        // reviewer received a message from default, mentions tester (not default)
+        let mentions = extract_teammate_mentions(
+            "[@tester: please run tests]",
+            "reviewer",
+            Some("default"),
+            "dev",
+            &teams,
+            &agents,
+        );
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(mentions[0].teammate_id, "tester");
+    }
+
+    #[test]
+    fn allows_mention_when_no_from_agent() {
+        let agents = sample_agents();
+        let teams = sample_teams();
+        // user message (no from_agent), default mentions reviewer
+        let mentions = extract_teammate_mentions(
+            "[@reviewer: check this]",
+            "default",
+            None,
+            "dev",
+            &teams,
+            &agents,
+        );
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(mentions[0].teammate_id, "reviewer");
     }
 }

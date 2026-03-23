@@ -190,6 +190,7 @@ async fn handle_message(
             peer_id: message.channel_id.to_string(),
             account_id: message.guild_id.map(|id| id.to_string()),
             pre_routed_agent: None,
+            from_agent: None,
             files,
             chain_depth: 0,
         },
