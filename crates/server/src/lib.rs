@@ -288,7 +288,6 @@ async fn create_agent(
         &config.agents,
         &config.teams,
         &agent_root,
-        config.skills_dir().as_deref(),
     ) {
         tracing::warn!("failed to bootstrap workspace for {agent_id}: {e:#}");
     }
