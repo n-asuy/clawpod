@@ -578,6 +578,9 @@ tr:hover td { background: var(--bg-hover); }
       <div class="nav-item" data-page="responses" onclick="navigate('responses')">
         <span class="nav-icon">&#9993;</span> Responses
       </div>
+      <div class="nav-item" data-page="heartbeat" onclick="navigate('heartbeat')">
+        <span class="nav-icon">&#9829;</span> Heartbeat
+      </div>
       <div class="nav-item" data-page="access" onclick="navigate('access')">
         <span class="nav-icon">&#128274;</span> Access
       </div>
@@ -730,7 +733,7 @@ tr:hover td { background: var(--bg-hover); }
 
   const validPages = new Set([
     'dashboard','events','agents','teams','settings',
-    'runs','sessions','responses','access','chatroom',
+    'runs','sessions','responses','heartbeat','access','chatroom',
   ]);
 
   function pageFromPath() {
@@ -761,7 +764,7 @@ tr:hover td { background: var(--bg-hover); }
     const titles = {
       dashboard: 'Dashboard', events: 'Events', agents: 'Agents', teams: 'Teams',
       settings: 'Settings', runs: 'Runs', sessions: 'Sessions', responses: 'Pending Responses',
-      access: 'Sender Access', chatroom: 'Chatroom',
+      heartbeat: 'Heartbeat', access: 'Sender Access', chatroom: 'Chatroom',
     };
     return titles[page] || page;
   }
@@ -781,6 +784,7 @@ tr:hover td { background: var(--bg-hover); }
         case 'runs': await renderRuns(container); break;
         case 'sessions': await renderSessions(container); break;
         case 'responses': await renderResponses(container); break;
+        case 'heartbeat': await renderHeartbeat(container); break;
         case 'access': await renderAccess(container); break;
         case 'chatroom': await renderChatroom(container); break;
       }
@@ -1353,6 +1357,58 @@ tr:hover td { background: var(--bg-hover); }
     } catch (err) { toast(err.message, 'error'); }
   };
 
+  /* Heartbeat */
+  let heartbeatAgentId = '';
+
+  async function renderHeartbeat(el) {
+    const [agentsData, heartbeatData] = await Promise.all([
+      GET('/api/agents'),
+      GET(`/api/heartbeat/runs?limit=100${heartbeatAgentId ? `&agent_id=${encodeURIComponent(heartbeatAgentId)}` : ''}`),
+    ]);
+    const agents = Object.keys(agentsData.agents || {});
+    const runs = heartbeatData.runs || [];
+    const hb = heartbeatData.config || {};
+
+    if (heartbeatAgentId && !agents.includes(heartbeatAgentId)) heartbeatAgentId = '';
+
+    el.innerHTML = `
+      <div style="display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          ${hb.enabled ? '<span class="badge badge-green">enabled</span>' : '<span class="badge badge-gray">disabled</span>'}
+          <span class="text-dim">interval: ${escapeHtml(String(hb.interval_sec || '-'))}s</span>
+          <span class="text-dim">sender: ${escapeHtml(hb.sender || '-')}</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <label class="form-label" style="margin:0">Agent:</label>
+          <select class="form-select" style="width:auto" onchange="switchHeartbeatAgent(this.value)">
+            <option value="">All agents</option>
+            ${agents.map(id => `<option value="${id}" ${id === heartbeatAgentId ? 'selected' : ''}>${id}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="card"><div class="card-body table-wrap"><table>
+        <thead><tr><th>Agent</th><th>Status</th><th>Finished</th><th>Duration</th><th>Prompt</th><th>Output</th></tr></thead>
+        <tbody>
+          ${runs.length === 0 ? '<tr><td colspan="6" class="text-dim">No heartbeat runs yet</td></tr>' : runs.map(r => `<tr>
+            <td><span class="badge badge-blue">${escapeHtml(r.agent_id)}</span></td>
+            <td>${statusBadge(r.status)}</td>
+            <td class="mono text-dim">${fmtDateTime(r.finished_at)}</td>
+            <td class="mono text-dim">${escapeHtml(String(r.duration_ms || 0))} ms</td>
+            <td style="max-width:280px">${escapeHtml(truncate(r.prompt || '', 140))}</td>
+            <td style="max-width:320px">${escapeHtml(truncate(r.output || '', 180))}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div></div>`;
+
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    pollTimer = setInterval(() => { if (currentPage === 'heartbeat') renderHeartbeat(el); }, 5000);
+  }
+
+  window.switchHeartbeatAgent = function(agentId) {
+    heartbeatAgentId = agentId || '';
+    renderHeartbeat($('#page-container'));
+  };
+
   /* Settings */
   async function renderSettings(el) {
     const data = await GET('/api/settings');
@@ -1501,6 +1557,16 @@ tr:hover td { background: var(--bg-hover); }
             if (!data.payload || !data.payload.team_id || data.payload.team_id === chatTeamId) {
               loadChatroomMessages();
             }
+            return;
+          }
+
+          if ((data.event_type === 'heartbeat_run_succeeded' || data.event_type === 'heartbeat_run_failed') && currentPage === 'heartbeat') {
+            renderHeartbeat($('#page-container'));
+            return;
+          }
+
+          if (data.event_type === 'settings_updated' && currentPage === 'heartbeat') {
+            renderHeartbeat($('#page-container'));
             return;
           }
 

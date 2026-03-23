@@ -124,7 +124,11 @@ struct PostChatroomRequest {
 
 /// Workspace files that can be edited via the API.
 /// Each entry is (subdirectory relative to agent root, display name).
-const EDITABLE_FILES: &[(&str, &str)] = &[(".clawpod", "SOUL.md"), ("", "AGENTS.md")];
+const EDITABLE_FILES: &[(&str, &str)] = &[
+    (".clawpod", "SOUL.md"),
+    ("", "AGENTS.md"),
+    ("", "heartbeat.md"),
+];
 
 pub async fn run(
     config: RuntimeConfig,
@@ -190,6 +194,7 @@ pub async fn run(
             "/api/chatroom/:team_id",
             get(get_chatroom).post(post_chatroom),
         )
+        .route("/api/heartbeat/runs", get(list_heartbeat_runs))
         .route("/api/models", get(list_models))
         .route("/api/doctor", get(api_doctor))
         .route("/api/events/stream", get(stream_events))
@@ -733,6 +738,25 @@ async fn post_chatroom(
     Ok(Json(json!({
         "ok": true,
         "message": entry,
+    })))
+}
+
+async fn list_heartbeat_runs(
+    State(state): State<AppState>,
+    Query(query): Query<LimitQuery>,
+) -> ApiResult<Json<Value>> {
+    let config = state.config.read().await;
+    let runs = state
+        .store
+        .list_heartbeat_runs(query.limit.unwrap_or(100), query.agent_id.as_deref())
+        .map_err(internal_error)?;
+    Ok(Json(json!({
+        "config": {
+            "enabled": config.heartbeat.enabled,
+            "interval_sec": config.heartbeat.interval_sec,
+            "sender": config.heartbeat.sender,
+        },
+        "runs": runs,
     })))
 }
 

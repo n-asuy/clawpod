@@ -96,6 +96,11 @@ allow_public_bind = false
 default_provider = "anthropic"
 timeout_sec = 120
 
+[heartbeat]
+enabled = false
+interval_sec = 3600
+sender = "Heartbeat"
+
 [queue]
 mode = "collect"
 max_retries = 3
@@ -228,6 +233,7 @@ Key endpoints:
 | `/api/queue/status` | GET | Queue state |
 | `/api/settings` | GET/PUT | Runtime config |
 | `/api/responses` | GET/POST | Pending responses / manual reply |
+| `/api/heartbeat/runs` | GET | Recent heartbeat runs |
 | `/api/events/stream` | GET | SSE live event stream |
 | `/api/chatroom/:team_id` | GET/POST | Team chatroom |
 | `/api/logs/events` | GET | Event log |

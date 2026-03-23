@@ -1,3 +1,4 @@
+mod heartbeat;
 mod service;
 
 use std::future::Future;
@@ -255,7 +256,7 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
     let sink = FileEventSink::new(config.event_log_path())?;
     let store = StateStore::new(config.state_path())?;
     let runner = Arc::new(CliRunner::new(config.runner.timeout_sec));
-    let processor = QueueProcessor::new(config.clone(), runner, store, sink);
+    let processor = QueueProcessor::new(config.clone(), runner, store.clone(), sink.clone());
     let mut tasks = JoinSet::new();
 
     spawn_component(
@@ -263,6 +264,17 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
         "queue",
         async move { processor.run_forever().await },
     );
+
+    if config.heartbeat.enabled {
+        let heartbeat_config = config.clone();
+        let heartbeat_store = store.clone();
+        let heartbeat_sink = sink.clone();
+        spawn_component(&mut tasks, "heartbeat", async move {
+            heartbeat::run_loop(heartbeat_config, heartbeat_store, heartbeat_sink).await
+        });
+    } else {
+        mark_component_disabled("heartbeat", "heartbeat disabled");
+    }
 
     if config.server.enabled {
         let server_config = config.clone();

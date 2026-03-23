@@ -106,7 +106,14 @@ QUALITY CHECK:
 
 const HEARTBEAT_TEMPLATE: &str = r#"# Heartbeat
 
-This workspace was bootstrapped by ClawPod.
+<!--
+Describe the periodic work this agent should do when heartbeat is enabled.
+Leave this file empty, or keep only comments, to disable heartbeat work for this agent.
+
+Example:
+Review open work, update teammates in the team chatroom if anything changed,
+and briefly note blockers.
+-->
 "#;
 
 pub fn ensure_agent_workspace(

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use agent::{
     clear_reset_flag, ensure_agent_workspace, ensure_session_workspace, PromptContext,
@@ -385,6 +386,8 @@ impl QueueProcessor {
         .await?;
 
         let prompt = augment_prompt_with_files(route.message, &event.files);
+        let heartbeat_started_at = Utc::now();
+        let heartbeat_started_mono = Instant::now();
 
         let metadata =
             self.build_run_metadata_for_agent(&agent_id, Some(&incoming_hook.metadata))?;
@@ -403,6 +406,18 @@ impl QueueProcessor {
 
         match outcome {
             Ok(text) => {
+                if event.channel == "heartbeat" {
+                    self.record_heartbeat_run(
+                        &agent_id,
+                        &event.text,
+                        Some(&text),
+                        "ok",
+                        heartbeat_started_at,
+                        heartbeat_started_mono.elapsed().as_millis() as i64,
+                    )
+                    .await?;
+                }
+
                 let chatroom_posts = extract_chatroom_posts(&text, &agent_id, &self.config.teams);
                 if !chatroom_posts.is_empty() {
                     self.post_chatroom_messages(&agent_id, &chatroom_posts)
@@ -520,6 +535,18 @@ impl QueueProcessor {
                 Ok(())
             }
             Err(err) => {
+                if event.channel == "heartbeat" {
+                    self.record_heartbeat_run(
+                        &agent_id,
+                        &event.text,
+                        Some(&err.to_string()),
+                        "error",
+                        heartbeat_started_at,
+                        heartbeat_started_mono.elapsed().as_millis() as i64,
+                    )
+                    .await?;
+                }
+
                 self.emit_event(
                     "run_failed",
                     json!({ "task_id": task_id, "agent_id": agent_id, "error": err.to_string() }),
@@ -608,7 +635,7 @@ impl QueueProcessor {
         outbound: OutboundEvent,
         metadata: HashMap<String, String>,
     ) -> Result<()> {
-        if event.channel == "chatroom" {
+        if matches!(event.channel.as_str(), "chatroom" | "heartbeat") {
             return Ok(());
         }
 
@@ -625,6 +652,44 @@ impl QueueProcessor {
             metadata,
         )
         .await?;
+        Ok(())
+    }
+
+    async fn record_heartbeat_run(
+        &self,
+        agent_id: &str,
+        prompt: &str,
+        output: Option<&str>,
+        status: &str,
+        started_at: chrono::DateTime<Utc>,
+        duration_ms: i64,
+    ) -> Result<()> {
+        let finished_at = Utc::now();
+        let run = self.store.record_heartbeat_run(
+            agent_id,
+            prompt,
+            output,
+            status,
+            &started_at.to_rfc3339(),
+            &finished_at.to_rfc3339(),
+            duration_ms,
+        )?;
+
+        self.emit_event(
+            if status == "ok" {
+                "heartbeat_run_succeeded"
+            } else {
+                "heartbeat_run_failed"
+            },
+            json!({
+                "run_id": run.id,
+                "agent_id": agent_id,
+                "status": status,
+                "duration_ms": duration_ms,
+            }),
+        )
+        .await?;
+
         Ok(())
     }
 

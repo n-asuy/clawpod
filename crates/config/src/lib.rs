@@ -155,6 +155,34 @@ impl Default for RunnerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_heartbeat_interval_sec")]
+    pub interval_sec: u64,
+    #[serde(default = "default_heartbeat_sender")]
+    pub sender: String,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_sec: default_heartbeat_interval_sec(),
+            sender: default_heartbeat_sender(),
+        }
+    }
+}
+
+fn default_heartbeat_interval_sec() -> u64 {
+    3600
+}
+
+fn default_heartbeat_sender() -> String {
+    "Heartbeat".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomProviderConfig {
     pub name: String,
     pub harness: ProviderHarness,
@@ -373,6 +401,8 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub runner: RunnerConfig,
     #[serde(default)]
+    pub heartbeat: HeartbeatConfig,
+    #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,
     #[serde(default)]
     pub custom_providers: HashMap<String, CustomProviderConfig>,
@@ -409,6 +439,7 @@ impl Default for RuntimeConfig {
             session: SessionConfig::default(),
             chain: ChainConfig::default(),
             runner: RunnerConfig::default(),
+            heartbeat: HeartbeatConfig::default(),
             agents,
             custom_providers: HashMap::new(),
             teams: HashMap::new(),
@@ -432,6 +463,9 @@ impl RuntimeConfig {
         }
         if self.daemon.max_concurrent_runs == 0 {
             bail!("daemon.max_concurrent_runs must be at least 1");
+        }
+        if self.heartbeat.interval_sec == 0 {
+            bail!("heartbeat.interval_sec must be at least 1");
         }
 
         for (provider_id, _provider) in &self.custom_providers {
