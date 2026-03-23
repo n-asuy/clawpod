@@ -639,10 +639,12 @@ ssh root@<ip> "mkdir -p /root/.clawpod/workspace/<agent>/sessions/<session>/.cla
 
 ### Tailscale Serve (Remote Access)
 
-Tailscale Serveで6901ポートをtailnet内に公開する。Office(3777)と同じホスト名でポート違いでアクセス可能:
+Tailscale ServeでKasmVNCをtailnet内にHTTPS公開する。`--https`はTailscale管理の正規TLS証明書でHTTPリバースプロキシとして動作する（`--tcp`は生TCPフォワードでブラウザからはnot secureになるため非推奨）。
+
+`--https`の対応ポートは443, 8443, 10000のみ。Office(443)と被らない8443を使用する:
 
 ```bash
-ssh root@<ip> "tailscale serve --bg --tcp 6901 tcp://localhost:6901"
+ssh root@<ip> "tailscale serve --bg --https 8443 http://localhost:6901"
 ```
 
 確認:
@@ -651,7 +653,7 @@ ssh root@<ip> "tailscale serve --bg --tcp 6901 tcp://localhost:6901"
 ssh root@<ip> "tailscale serve status"
 ```
 
-アクセス: `https://<tailscale-hostname>:6901`
+アクセス: `https://<tailscale-hostname>:8443`
 
 ユーザー名: `root`、パスワード: 設定したVNCパスワード。
 
