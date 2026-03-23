@@ -159,7 +159,7 @@ pub fn ensure_agent_workspace(
     }
 
     // Symlink .claude/skills -> ../.agents/skills so that Claude CLI
-    // discovers skills natively. Codex CLI discovers .agents/skills/ directly.
+    // discovers skills natively from the working directory.
     let claude_skills_link = root.join(".claude").join("skills");
     if fs::symlink_metadata(&claude_skills_link).is_err() {
         #[cfg(unix)]
@@ -185,6 +185,54 @@ pub fn ensure_agent_workspace(
     if !heartbeat.exists() {
         fs::write(&heartbeat, HEARTBEAT_TEMPLATE)
             .with_context(|| format!("failed to write heartbeat.md: {}", heartbeat.display()))?;
+    }
+
+    Ok(())
+}
+
+/// Sync skills into `~/.codex/skills/` so that Codex CLI can discover them.
+/// Codex CLI only reads skills from its global config directory, not from the
+/// working directory. Each skill subdirectory in `skills_source` is symlinked
+/// into `~/.codex/skills/<name>`.
+pub fn ensure_codex_skills(skills_source: &Path) -> Result<()> {
+    let home = std::env::var("HOME").context("HOME not set")?;
+    let codex_home = PathBuf::from(home).join(".codex");
+    let codex_skills = codex_home.join("skills");
+    fs::create_dir_all(&codex_skills)
+        .with_context(|| format!("failed to create {}", codex_skills.display()))?;
+
+    if !skills_source.is_dir() {
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(skills_source)
+        .with_context(|| format!("failed to read {}", skills_source.display()))?;
+
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let skill_name = entry.file_name();
+        let link_path = codex_skills.join(&skill_name);
+
+        // If a symlink already points to the correct target, skip.
+        if let Ok(target) = fs::read_link(&link_path) {
+            if target == entry.path() {
+                continue;
+            }
+            // Stale symlink or wrong target — remove it.
+            let _ = fs::remove_file(&link_path);
+        } else if fs::symlink_metadata(&link_path).is_ok() {
+            // Exists but is not a symlink (real directory) — remove recursively.
+            let _ = fs::remove_dir_all(&link_path);
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs as unix_fs;
+            unix_fs::symlink(entry.path(), &link_path)
+                .with_context(|| format!("failed to symlink codex skill {}", link_path.display()))?;
+        }
     }
 
     Ok(())

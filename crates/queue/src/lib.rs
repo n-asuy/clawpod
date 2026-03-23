@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent::{clear_reset_flag, ensure_agent_workspace, ensure_session_workspace, PromptContext, SystemPromptBuilder};
+use agent::{clear_reset_flag, ensure_agent_workspace, ensure_codex_skills, ensure_session_workspace, PromptContext, SystemPromptBuilder};
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use config::{CustomProviderConfig, RuntimeConfig};
@@ -141,6 +141,14 @@ impl QueueProcessor {
 
     pub async fn run_forever(self) -> Result<()> {
         info!("queue processor started");
+
+        // Sync skills into ~/.codex/skills/ for Codex CLI discovery.
+        if let Some(skills_dir) = self.config.skills_dir() {
+            if let Err(e) = ensure_codex_skills(&skills_dir) {
+                warn!("failed to sync codex skills: {e:#}");
+            }
+        }
+
         self.emit_event("processor_start", json!({ "status": "started" }))
             .await?;
         self.recover_processing_files().await?;
