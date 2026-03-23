@@ -120,6 +120,8 @@ pub fn ensure_agent_workspace(
         .with_context(|| format!("failed to create agent root: {}", root.display()))?;
     fs::create_dir_all(root.join(".claude"))
         .with_context(|| format!("failed to create .claude dir: {}", root.display()))?;
+    fs::create_dir_all(root.join(".codex"))
+        .with_context(|| format!("failed to create .codex dir: {}", root.display()))?;
     fs::create_dir_all(root.join(".agents"))
         .with_context(|| format!("failed to create .agents dir: {}", root.display()))?;
     fs::create_dir_all(root.join("memory"))
@@ -164,6 +166,7 @@ pub fn ensure_session_workspace(agent_root: &Path, session_key: &str) -> Result<
     )?;
     link_or_copy(agent_root.join(".clawpod"), session_dir.join(".clawpod"))?;
     link_or_copy(agent_root.join(".claude"), session_dir.join(".claude"))?;
+    link_or_copy(agent_root.join(".codex"), session_dir.join(".codex"))?;
     link_or_copy(agent_root.join(".agents"), session_dir.join(".agents"))?;
     link_or_copy(agent_root.join("memory"), session_dir.join("memory"))?;
 
