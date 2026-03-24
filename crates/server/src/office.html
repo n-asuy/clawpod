@@ -1401,7 +1401,7 @@ tr:hover td { background: var(--bg-hover); }
             <option value="">All agents</option>
             ${agents.map(id => `<option value="${id}" ${id === heartbeatAgentId ? 'selected' : ''}>${id}</option>`).join('')}
           </select>
-          ${agents.map(id => `<button class="btn btn-sm" onclick="triggerHeartbeat('${escapeHtml(id)}')" title="Run heartbeat for ${escapeHtml(id)}">Run ${escapeHtml(id)}</button>`).join(' ')}
+          <button class="btn btn-sm" onclick="triggerHeartbeatSelected()" ${heartbeatAgentId ? '' : 'disabled'}>Run${heartbeatAgentId ? ' ' + escapeHtml(heartbeatAgentId) : ''}</button>
         </div>
       </div>
       <div class="card"><div class="card-body table-wrap"><table>
@@ -1432,9 +1432,10 @@ tr:hover td { background: var(--bg-hover); }
     renderHeartbeat($('#page-container'));
   };
 
-  window.triggerHeartbeat = async function(agentId) {
+  window.triggerHeartbeatSelected = async function() {
+    if (!heartbeatAgentId) return;
     try {
-      const result = await POST('/api/heartbeat/run', { agent_id: agentId });
+      await POST('/api/heartbeat/run', { agent_id: heartbeatAgentId });
       renderHeartbeat($('#page-container'));
     } catch (err) {
       alert('Heartbeat trigger failed: ' + (err.message || err));
