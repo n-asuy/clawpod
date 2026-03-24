@@ -121,12 +121,16 @@ impl HeartbeatService {
             &agent_root,
         )?;
 
-        // Load HEARTBEAT.md or use policy prompt
+        // Load HEARTBEAT.md. If present and non-empty, use it.
+        // If absent or effectively empty, fall back to the policy default prompt.
         let heartbeat_prompt = load_heartbeat_md(&agent_root).await;
-        let effective_prompt = heartbeat_prompt.as_deref().unwrap_or(&policy.prompt);
+        let effective_prompt = match &heartbeat_prompt {
+            Some(content) if !is_effectively_empty(content) => content.as_str(),
+            _ => &policy.prompt,
+        };
 
-        // Skip if HEARTBEAT.md is empty (event-driven reasons bypass this gate)
-        if !reason.is_event_driven() && is_effectively_empty(effective_prompt) {
+        // If even the policy prompt is empty, skip (shouldn't happen with defaults).
+        if is_effectively_empty(effective_prompt) && !reason.is_event_driven() {
             return self.record_skip(
                 agent_id,
                 &reason,
