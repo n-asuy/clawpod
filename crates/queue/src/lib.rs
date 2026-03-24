@@ -401,7 +401,13 @@ impl QueueProcessor {
         let _global_guard = self.global_limit.acquire().await?;
 
         let continue_session = self.store.session_exists(&session_key)?;
-        self.store.touch_session(&session_key, &agent_id)?;
+        record_session_context(
+            &self.store,
+            &agent_id,
+            &event,
+            &session_key,
+            &self.config.session.main_key,
+        )?;
 
         let task_id = Uuid::new_v4();
 
@@ -1246,6 +1252,46 @@ fn parse_due_from_filename(path: &Path) -> Option<i64> {
     prefix.parse::<i64>().ok()
 }
 
+fn record_session_context(
+    store: &StateStore,
+    agent_id: &str,
+    event: &InboundEvent,
+    session_key: &str,
+    main_key: &str,
+) -> Result<()> {
+    if is_internal_channel(&event.channel) {
+        return store.touch_session(session_key, agent_id);
+    }
+
+    let chat_type = chat_type_to_str(event.chat_type);
+    store.touch_session_with_context(
+        session_key,
+        agent_id,
+        &event.channel,
+        &event.peer_id,
+        event.account_id.as_deref(),
+        chat_type,
+        &event.sender_id,
+        &event.message_id,
+    )?;
+
+    let main_session_key = format!("agent:{agent_id}:{main_key}");
+    if main_session_key != session_key {
+        store.touch_session_with_context(
+            &main_session_key,
+            agent_id,
+            &event.channel,
+            &event.peer_id,
+            event.account_id.as_deref(),
+            chat_type,
+            &event.sender_id,
+            &event.message_id,
+        )?;
+    }
+
+    Ok(())
+}
+
 /// Channels that are internal to ClawPod and should not affect routing affinity.
 fn is_internal_channel(channel: &str) -> bool {
     matches!(channel, "heartbeat" | "chatroom" | "internal")
@@ -1345,6 +1391,32 @@ fn apply_custom_provider_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+
+    fn temp_state_path(label: &str) -> PathBuf {
+        env::temp_dir().join(format!(
+            "clawpod-queue-{label}-{}.json",
+            Uuid::new_v4().simple()
+        ))
+    }
+
+    fn sample_event(channel: &str, peer_id: &str, sender_id: &str) -> InboundEvent {
+        InboundEvent {
+            message_id: "msg-1".to_string(),
+            channel: channel.to_string(),
+            sender: "alice".to_string(),
+            sender_id: sender_id.to_string(),
+            text: "hello".to_string(),
+            timestamp: Utc::now(),
+            chat_type: ChatType::Direct,
+            peer_id: peer_id.to_string(),
+            account_id: None,
+            files: vec![],
+            pre_routed_agent: None,
+            from_agent: None,
+            chain_depth: 0,
+        }
+    }
 
     #[test]
     fn envelope_roundtrip_preserves_chain_depth() {
@@ -1409,5 +1481,70 @@ mod tests {
         let envelope: IncomingQueueEnvelope = serde_json::from_value(payload).expect("roundtrip");
         assert_eq!(envelope.chain_depth, 5);
         assert_eq!(envelope.agent.as_deref(), Some("tester"));
+    }
+
+    #[test]
+    fn external_messages_update_scoped_and_main_sessions() {
+        let path = temp_state_path("session-context");
+        let store = StateStore::new(&path).expect("store");
+        let event = sample_event("slack", "D123", "U123");
+        let session_key = build_session_key("leader", &event, domain::DmScope::PerChannelPeer, "main");
+
+        record_session_context(&store, "leader", &event, &session_key, "main")
+            .expect("record");
+
+        let scoped = store
+            .get_session(&session_key)
+            .expect("get scoped")
+            .expect("scoped exists");
+        assert_eq!(scoped.last_channel.as_deref(), Some("slack"));
+        assert_eq!(scoped.last_peer_id.as_deref(), Some("D123"));
+
+        let main = store
+            .get_session("agent:leader:main")
+            .expect("get main")
+            .expect("main exists");
+        assert_eq!(main.last_channel.as_deref(), Some("slack"));
+        assert_eq!(main.last_peer_id.as_deref(), Some("D123"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn internal_messages_do_not_overwrite_main_delivery_context() {
+        let path = temp_state_path("internal-session-context");
+        let store = StateStore::new(&path).expect("store");
+
+        store
+            .touch_session_with_context(
+                "agent:leader:main",
+                "leader",
+                "slack",
+                "D123",
+                None,
+                "direct",
+                "U123",
+                "msg-1",
+            )
+            .expect("seed main");
+
+        let internal = sample_event("heartbeat", "heartbeat", "system");
+        record_session_context(
+            &store,
+            "leader",
+            &internal,
+            "agent:leader:main:heartbeat",
+            "main",
+        )
+        .expect("record");
+
+        let main = store
+            .get_session("agent:leader:main")
+            .expect("get main")
+            .expect("main exists");
+        assert_eq!(main.last_channel.as_deref(), Some("slack"));
+        assert_eq!(main.last_peer_id.as_deref(), Some("D123"));
+
+        let _ = std::fs::remove_file(path);
     }
 }
