@@ -12,7 +12,7 @@ use axum::{serve, Router};
 use chrono::Utc;
 use config::{ensure_runtime_dirs, write_config, RuntimeConfig};
 use domain::{AgentConfig, TeamConfig};
-use heartbeat::HeartbeatService;
+use heartbeat::{HeartbeatLoopControl, HeartbeatService};
 use observer::{mark_component_error, mark_component_ok, snapshot_json, FileEventSink};
 use queue::{enqueue_chatroom_message, enqueue_outgoing_message, list_outgoing_messages};
 use serde::Deserialize;
@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use store::StateStore;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use tokio::time::{sleep, Duration};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
@@ -37,6 +38,7 @@ struct AppState {
     store: StateStore,
     sink: FileEventSink,
     heartbeat_service: Option<Arc<HeartbeatService>>,
+    heartbeat_control: Option<HeartbeatLoopControl>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,6 +143,7 @@ pub async fn run(
     store: StateStore,
     sink: FileEventSink,
     heartbeat_service: Option<Arc<HeartbeatService>>,
+    heartbeat_control: Option<HeartbeatLoopControl>,
 ) -> Result<()> {
     let bind_addr = config.server_listen_addr();
     let office_url = config.office_url();
@@ -150,6 +153,7 @@ pub async fn run(
         store,
         sink,
         heartbeat_service,
+        heartbeat_control,
     };
 
     let app = Router::new()
@@ -159,6 +163,7 @@ pub async fn run(
         .route("/health", get(health))
         .route("/api/health", get(api_health))
         .route("/api/settings", get(get_settings).put(update_settings))
+        .route("/api/runtime/restart", post(restart_runtime))
         .route("/api/agents", get(list_agents).post(create_agent))
         .route(
             "/api/agents/:agent_id",
@@ -240,6 +245,9 @@ async fn get_settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     Ok(Json(json!({
         "config_path": state.config_path.display().to_string(),
         "config": config,
+        "runtime": {
+            "restart_supported": runtime_restart_supported(&state),
+        },
     })))
 }
 
@@ -252,16 +260,54 @@ async fn update_settings(
     payload.validate().map_err(internal_error)?;
     ensure_runtime_dirs(&payload).map_err(internal_error)?;
     write_config(&state.config_path, &payload).map_err(internal_error)?;
+    let heartbeat_hot_reloaded = state
+        .heartbeat_control
+        .as_ref()
+        .is_some_and(|control| control.update_from_config(&payload));
     *state.config.write().await = payload.clone();
     emit_server_event(
         &state,
         "settings_updated",
-        json!({ "config_path": state.config_path.display().to_string() }),
+        json!({
+            "config_path": state.config_path.display().to_string(),
+            "heartbeat_hot_reloaded": heartbeat_hot_reloaded,
+        }),
     );
     Ok(Json(json!({
         "ok": true,
         "message": "settings saved; restart runtime for full effect",
         "config": payload.masked_for_display(),
+        "runtime": {
+            "restart_supported": runtime_restart_supported(&state),
+        },
+        "heartbeat_hot_reloaded": heartbeat_hot_reloaded,
+    })))
+}
+
+async fn restart_runtime(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    if !runtime_restart_supported(&state) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "runtime restart is not available in office-only mode".to_string(),
+        ));
+    }
+
+    emit_server_event(
+        &state,
+        "runtime_restart_requested",
+        json!({
+            "pid": std::process::id(),
+        }),
+    );
+
+    tokio::spawn(async {
+        sleep(Duration::from_millis(200)).await;
+        std::process::exit(0);
+    });
+
+    Ok(Json(json!({
+        "ok": true,
+        "message": "runtime restart scheduled",
     })))
 }
 
@@ -763,6 +809,7 @@ async fn list_heartbeat_runs(
             "enabled": config.heartbeat.enabled,
             "interval_sec": config.heartbeat.interval_sec,
             "sender": config.heartbeat.sender,
+            "restart_supported": runtime_restart_supported(&state),
         },
         "runs": runs,
     })))
@@ -777,22 +824,21 @@ async fn trigger_heartbeat_run(
     State(state): State<AppState>,
     Json(body): Json<TriggerHeartbeatBody>,
 ) -> ApiResult<Json<Value>> {
-    let service = state
-        .heartbeat_service
-        .as_ref()
-        .ok_or_else(|| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "heartbeat service not available".to_string(),
-            )
-        })?;
+    let service = state.heartbeat_service.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "heartbeat service not available".to_string(),
+        )
+    })?;
 
     let view = service
         .run_once(&body.agent_id, domain::HeartbeatRunReason::Manual)
         .await
         .map_err(internal_error)?;
 
-    Ok(Json(serde_json::to_value(view).map_err(|e| internal_error(e.into()))?))
+    Ok(Json(
+        serde_json::to_value(view).map_err(|e| internal_error(e.into()))?,
+    ))
 }
 
 async fn stream_events(
@@ -991,6 +1037,10 @@ fn emit_server_event(state: &AppState, event_type: &str, payload: Value) {
     if let Err(err) = state.store.record_event(event_type, &payload) {
         tracing::warn!("failed to persist server event {event_type}: {err:#}");
     }
+}
+
+fn runtime_restart_supported(state: &AppState) -> bool {
+    state.heartbeat_control.is_some()
 }
 
 async fn mutate_config<F>(state: &AppState, mutate: F) -> ApiResult<RuntimeConfig>

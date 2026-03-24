@@ -6,13 +6,13 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use ::heartbeat::HeartbeatService;
 use agent::reset_agent_workspace;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 use config::{default_config_path, ensure_runtime_dirs, load_config, RuntimeConfig};
 use domain::ChatType;
-use ::heartbeat::HeartbeatService;
 use observer::{
     bump_component_restart, log_startup_banner, mark_component_disabled, mark_component_error,
     mark_component_ok, FileEventSink,
@@ -266,14 +266,12 @@ async fn main() -> Result<()> {
             log_startup_banner(&config.home_dir());
             let sink = FileEventSink::new(config.event_log_path())?;
             let store = StateStore::new(config.state_path())?;
-            server::run(config, config_path, store, sink, None).await?;
+            server::run(config, config_path, store, sink, None, None).await?;
         }
         Commands::Reset { agent } => reset(&config, &agent)?,
         Commands::Pairing { command } => pairing_cmd(&config, &command)?,
         Commands::Auth { command } => auth_cmd(&command).await?,
-        Commands::Heartbeat { command } => {
-            heartbeat_cmd(&config, &config_path, &command).await?
-        }
+        Commands::Heartbeat { command } => heartbeat_cmd(&config, &config_path, &command).await?,
     }
 
     Ok(())
@@ -287,7 +285,8 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
     let store = StateStore::new(config.state_path())?;
     let runner = Arc::new(CliRunner::new(config.runner.timeout_sec));
     let config_arc = Arc::new(config.clone());
-    let processor = QueueProcessor::new(config.clone(), runner.clone(), store.clone(), sink.clone());
+    let processor =
+        QueueProcessor::new(config.clone(), runner.clone(), store.clone(), sink.clone());
     let mut tasks = JoinSet::new();
 
     spawn_component(
@@ -297,6 +296,7 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
     );
 
     // Create HeartbeatService (shared between heartbeat loop and server)
+    let heartbeat_control = ::heartbeat::HeartbeatLoopControl::new(&config);
     let heartbeat_service = Arc::new(HeartbeatService::new(
         config_arc.clone(),
         runner.clone(),
@@ -304,17 +304,13 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
         sink.clone(),
     ));
 
-    if config.heartbeat.enabled {
-        let hb_service = heartbeat_service.clone();
-        let hb_config = config_arc.clone();
-        let hb_store = store.clone();
-        let hb_sink = sink.clone();
-        spawn_component(&mut tasks, "heartbeat", async move {
-            heartbeat::run_loop(hb_service, hb_config, hb_store, hb_sink).await
-        });
-    } else {
-        mark_component_disabled("heartbeat", "heartbeat disabled");
-    }
+    let hb_service = heartbeat_service.clone();
+    let hb_control = heartbeat_control.clone();
+    let hb_store = store.clone();
+    let hb_sink = sink.clone();
+    spawn_component(&mut tasks, "heartbeat", async move {
+        heartbeat::run_loop(hb_service, hb_control, hb_store, hb_sink).await
+    });
 
     if config.server.enabled {
         let server_config = config.clone();
@@ -322,9 +318,17 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
         let server_store = StateStore::new(server_config.state_path())?;
         let server_sink = FileEventSink::new(server_config.event_log_path())?;
         let server_hb = heartbeat_service.clone();
+        let server_hb_control = heartbeat_control.clone();
         spawn_component(&mut tasks, "office", async move {
-            server::run(server_config, server_path, server_store, server_sink, Some(server_hb))
-                .await
+            server::run(
+                server_config,
+                server_path,
+                server_store,
+                server_sink,
+                Some(server_hb),
+                Some(server_hb_control),
+            )
+            .await
         });
     } else {
         mark_component_disabled("office", "server disabled");
@@ -550,7 +554,11 @@ async fn heartbeat_cmd(
         HeartbeatCommand::Last { agent } => {
             let store = StateStore::new(config.state_path())?;
             let runs = store.list_heartbeat_runs(
-                if agent.is_some() { 1 } else { config.agents.len() },
+                if agent.is_some() {
+                    1
+                } else {
+                    config.agents.len()
+                },
                 agent.as_deref(),
             )?;
             if runs.is_empty() {
@@ -558,18 +566,9 @@ async fn heartbeat_cmd(
                 return Ok(());
             }
             for run in &runs {
-                let indicator = run
-                    .indicator_type
-                    .as_deref()
-                    .unwrap_or("-");
-                let preview = run
-                    .preview
-                    .as_deref()
-                    .unwrap_or("-");
-                let skip = run
-                    .skip_reason
-                    .as_deref()
-                    .unwrap_or("");
+                let indicator = run.indicator_type.as_deref().unwrap_or("-");
+                let preview = run.preview.as_deref().unwrap_or("-");
+                let skip = run.skip_reason.as_deref().unwrap_or("");
                 println!(
                     "  {} agent={} status={} reason={} indicator={} {}{}",
                     run.finished_at,

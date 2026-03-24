@@ -22,6 +22,7 @@ use observer::FileEventSink;
 use serde_json::json;
 use store::StateStore;
 use tokio::fs;
+use tokio::sync::watch;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -38,6 +39,53 @@ pub struct CycleOutcome {
     pub ran: usize,
     pub skipped: usize,
     pub failed: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeartbeatLoopSettings {
+    pub enabled: bool,
+    pub interval_sec: u64,
+}
+
+impl HeartbeatLoopSettings {
+    pub fn from_config(config: &RuntimeConfig) -> Self {
+        Self {
+            enabled: config.heartbeat.enabled,
+            interval_sec: resolve_global_interval(config).as_secs(),
+        }
+    }
+
+    pub fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.interval_sec.max(10))
+    }
+}
+
+#[derive(Clone)]
+pub struct HeartbeatLoopControl {
+    tx: watch::Sender<HeartbeatLoopSettings>,
+}
+
+impl HeartbeatLoopControl {
+    pub fn new(config: &RuntimeConfig) -> Self {
+        let (tx, _rx) = watch::channel(HeartbeatLoopSettings::from_config(config));
+        Self { tx }
+    }
+
+    pub fn subscribe(&self) -> watch::Receiver<HeartbeatLoopSettings> {
+        self.tx.subscribe()
+    }
+
+    pub fn update_from_config(&self, config: &RuntimeConfig) -> bool {
+        let next = HeartbeatLoopSettings::from_config(config);
+        self.tx.send_if_modified(|current| {
+            if *current == next {
+                false
+            } else {
+                *current = next;
+                true
+            }
+        })
+    }
 }
 
 pub struct HeartbeatService {
@@ -68,10 +116,7 @@ impl HeartbeatService {
         let agents = self.resolve_heartbeat_agents();
 
         for (agent_id, _agent) in &agents {
-            match self
-                .run_once(agent_id, HeartbeatRunReason::Scheduled)
-                .await
-            {
+            match self.run_once(agent_id, HeartbeatRunReason::Scheduled).await {
                 Ok(view) => match view.status.as_str() {
                     "ran" => outcome.ran += 1,
                     "skipped" => outcome.skipped += 1,
@@ -195,11 +240,7 @@ impl HeartbeatService {
                 // Duplicate suppression (only for non-event-driven reasons)
                 let is_dup = !reason.is_event_driven()
                     && matches!(normalized, NormalizeResult::Alert(_))
-                    && is_duplicate_heartbeat(
-                        delivery_session.as_ref(),
-                        output,
-                        &finished_at,
-                    );
+                    && is_duplicate_heartbeat(delivery_session.as_ref(), output, &finished_at);
 
                 let (delivery_mode, delivery_channel, delivery_recipient) = if is_dup {
                     (HeartbeatDeliveryMode::Suppressed, None, None)
@@ -248,9 +289,9 @@ impl HeartbeatService {
                 }
 
                 // Update session heartbeat tracking (always on main session for dedup)
-                if let Err(err) = self
-                    .store
-                    .update_session_heartbeat(&main_session_key, output, &finished_at)
+                if let Err(err) =
+                    self.store
+                        .update_session_heartbeat(&main_session_key, output, &finished_at)
                 {
                     warn!(agent = %agent_id, error = %err, "failed to update session heartbeat");
                 }
@@ -262,19 +303,14 @@ impl HeartbeatService {
                 };
 
                 // Indicator
-                let has_delivery_issue =
-                    delivery_mode == HeartbeatDeliveryMode::NoTarget
-                        && matches!(normalized, NormalizeResult::Alert(_));
+                let has_delivery_issue = delivery_mode == HeartbeatDeliveryMode::NoTarget
+                    && matches!(normalized, NormalizeResult::Alert(_));
                 let event_status =
                     derive_event_status(&normalized, delivered, has_delivery_issue, false);
                 let indicator = resolve_indicator_type(event_status);
                 let indicator_str = indicator.map(|i| i.to_string());
 
-                let skip_reason = if is_dup {
-                    Some("duplicate")
-                } else {
-                    None
-                };
+                let skip_reason = if is_dup { Some("duplicate") } else { None };
 
                 // Emit event
                 let _ = self.sink.emit(
@@ -310,8 +346,7 @@ impl HeartbeatService {
                 )
             }
             Err(err) => {
-                let indicator =
-                    resolve_indicator_type(indicator::HeartbeatEventStatus::Failed);
+                let indicator = resolve_indicator_type(indicator::HeartbeatEventStatus::Failed);
                 let indicator_str = indicator.map(|i| i.to_string());
 
                 let _ = self.sink.emit(
@@ -526,6 +561,34 @@ mod tests {
         config.heartbeat.interval_sec = 1;
         let dur = resolve_global_interval(&config);
         assert_eq!(dur, std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn heartbeat_loop_settings_use_effective_interval() {
+        let mut config = RuntimeConfig::default();
+        config.agent_defaults = Some(config::AgentDefaultsConfig {
+            heartbeat: Some(domain::AgentHeartbeatConfig {
+                every: Some("15m".into()),
+                ..Default::default()
+            }),
+        });
+        let settings = HeartbeatLoopSettings::from_config(&config);
+        assert!(!settings.enabled);
+        assert_eq!(settings.interval_sec, 900);
+        assert_eq!(settings.interval(), std::time::Duration::from_secs(900));
+    }
+
+    #[test]
+    fn heartbeat_loop_control_only_notifies_on_change() {
+        let config = RuntimeConfig::default();
+        let control = HeartbeatLoopControl::new(&config);
+
+        assert!(!control.update_from_config(&config));
+
+        let mut next = config.clone();
+        next.heartbeat.enabled = true;
+        assert!(control.update_from_config(&next));
+        assert!(control.subscribe().borrow().enabled);
     }
 
     #[test]

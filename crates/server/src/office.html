@@ -1410,7 +1410,8 @@ tr:hover td { background: var(--bg-hover); }
           >
           <span class="text-dim">sec</span>
           <button class="btn btn-sm" onclick="saveHeartbeatSettings()">Save</button>
-          <span class="text-dim">restart runtime for full effect</span>
+          ${hb.restart_supported ? '<button class="btn btn-sm" onclick="restartRuntime()">Restart Runtime</button>' : ''}
+          <span class="text-dim">applies live</span>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <label class="form-label" style="margin:0">Agent:</label>
@@ -1471,8 +1472,19 @@ tr:hover td { background: var(--bg-hover); }
       config.heartbeat.enabled = $('#heartbeat-enabled').checked;
       config.heartbeat.interval_sec = intervalSec;
       await PUT('/api/settings', config);
-      toast('Heartbeat settings saved (restart runtime for full effect)', 'success');
+      toast('Heartbeat settings saved and applied live', 'success');
       renderHeartbeat($('#page-container'));
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+
+  window.restartRuntime = async function() {
+    if (!confirm('Restart the runtime now? Active work may be interrupted briefly.')) return;
+    try {
+      await POST('/api/runtime/restart');
+      toast('Runtime restart requested. Reloading shortly…', 'success');
+      setTimeout(() => window.location.reload(), 4000);
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -1491,7 +1503,8 @@ tr:hover td { background: var(--bg-hover); }
         </div>
         <div class="card-body">
           <textarea class="form-textarea" id="settings-json" style="min-height:400px;font-family:'SF Mono','Menlo',monospace;font-size:12px">${escapeHtml(JSON.stringify(config, null, 2))}</textarea>
-          <div style="margin-top:12px;display:flex;justify-content:flex-end">
+          <div style="margin-top:12px;display:flex;justify-content:flex-end;gap:8px">
+            ${data.runtime?.restart_supported ? '<button class="btn" onclick="restartRuntime()">Restart Runtime</button>' : ''}
             <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
           </div>
         </div>

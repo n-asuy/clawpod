@@ -101,22 +101,34 @@ mod tests {
 
     #[test]
     fn derive_alert_delivered() {
-        let status =
-            derive_event_status(&NormalizeResult::Alert("disk full".into()), true, false, false);
+        let status = derive_event_status(
+            &NormalizeResult::Alert("disk full".into()),
+            true,
+            false,
+            false,
+        );
         assert_eq!(status, HeartbeatEventStatus::Sent);
     }
 
     #[test]
     fn derive_failed_overrides() {
-        let status =
-            derive_event_status(&NormalizeResult::Alert("disk full".into()), false, false, true);
+        let status = derive_event_status(
+            &NormalizeResult::Alert("disk full".into()),
+            false,
+            false,
+            true,
+        );
         assert_eq!(status, HeartbeatEventStatus::Failed);
     }
 
     #[test]
     fn derive_no_target_as_delivery_warning() {
-        let status =
-            derive_event_status(&NormalizeResult::Alert("disk full".into()), false, true, false);
+        let status = derive_event_status(
+            &NormalizeResult::Alert("disk full".into()),
+            false,
+            true,
+            false,
+        );
         assert_eq!(status, HeartbeatEventStatus::DeliveryWarning);
     }
 }
