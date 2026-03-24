@@ -1360,6 +1360,24 @@ tr:hover td { background: var(--bg-hover); }
   /* Heartbeat */
   let heartbeatAgentId = '';
 
+  function indicatorBadge(type) {
+    if (!type) return '<span class="badge badge-gray">-</span>';
+    if (type === 'ok') return '<span class="badge badge-green">ok</span>';
+    if (type === 'alert') return '<span class="badge badge-yellow">alert</span>';
+    if (type === 'error') return '<span class="badge badge-red">error</span>';
+    return `<span class="badge badge-gray">${escapeHtml(type)}</span>`;
+  }
+
+  function deliveryInfo(r) {
+    const mode = r.delivery_mode || '-';
+    if (mode === 'delivered' && r.delivery_channel) {
+      return `${r.delivery_channel}` + (r.delivery_recipient ? ` → ${truncate(r.delivery_recipient, 20)}` : '');
+    }
+    if (mode === 'suppressed') return r.skip_reason === 'duplicate' ? 'suppressed (dup)' : 'suppressed';
+    if (mode === 'no_target') return 'no target';
+    return mode;
+  }
+
   async function renderHeartbeat(el) {
     const [agentsData, heartbeatData] = await Promise.all([
       GET('/api/agents'),
@@ -1376,7 +1394,6 @@ tr:hover td { background: var(--bg-hover); }
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           ${hb.enabled ? '<span class="badge badge-green">enabled</span>' : '<span class="badge badge-gray">disabled</span>'}
           <span class="text-dim">interval: ${escapeHtml(String(hb.interval_sec || '-'))}s</span>
-          <span class="text-dim">sender: ${escapeHtml(hb.sender || '-')}</span>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <label class="form-label" style="margin:0">Agent:</label>
@@ -1384,18 +1401,24 @@ tr:hover td { background: var(--bg-hover); }
             <option value="">All agents</option>
             ${agents.map(id => `<option value="${id}" ${id === heartbeatAgentId ? 'selected' : ''}>${id}</option>`).join('')}
           </select>
+          ${agents.map(id => `<button class="btn btn-sm" onclick="triggerHeartbeat('${escapeHtml(id)}')" title="Run heartbeat for ${escapeHtml(id)}">Run ${escapeHtml(id)}</button>`).join(' ')}
         </div>
       </div>
       <div class="card"><div class="card-body table-wrap"><table>
-        <thead><tr><th>Agent</th><th>Status</th><th>Finished</th><th>Duration</th><th>Prompt</th><th>Output</th></tr></thead>
+        <thead><tr>
+          <th>Agent</th><th>Indicator</th><th>Status</th><th>Reason</th>
+          <th>Delivery</th><th>Preview</th><th>Finished</th><th>Duration</th>
+        </tr></thead>
         <tbody>
-          ${runs.length === 0 ? '<tr><td colspan="6" class="text-dim">No heartbeat runs yet</td></tr>' : runs.map(r => `<tr>
+          ${runs.length === 0 ? '<tr><td colspan="8" class="text-dim">No heartbeat runs yet</td></tr>' : runs.map(r => `<tr>
             <td><span class="badge badge-blue">${escapeHtml(r.agent_id)}</span></td>
-            <td>${statusBadge(r.status)}</td>
+            <td>${indicatorBadge(r.indicator_type)}</td>
+            <td>${statusBadge(r.status)}${r.skip_reason ? ` <span class="text-dim">(${escapeHtml(r.skip_reason)})</span>` : ''}</td>
+            <td class="text-dim">${escapeHtml(r.reason || '-')}</td>
+            <td class="text-dim">${escapeHtml(deliveryInfo(r))}</td>
+            <td style="max-width:320px" title="${escapeHtml(r.output || '')}">${escapeHtml(truncate(r.preview || r.output || '-', 120))}</td>
             <td class="mono text-dim">${fmtDateTime(r.finished_at)}</td>
-            <td class="mono text-dim">${escapeHtml(String(r.duration_ms || 0))} ms</td>
-            <td style="max-width:280px">${escapeHtml(truncate(r.prompt || '', 140))}</td>
-            <td style="max-width:320px">${escapeHtml(truncate(r.output || '', 180))}</td>
+            <td class="mono text-dim">${escapeHtml(String(r.duration_ms || 0))}ms</td>
           </tr>`).join('')}
         </tbody>
       </table></div></div>`;
@@ -1407,6 +1430,15 @@ tr:hover td { background: var(--bg-hover); }
   window.switchHeartbeatAgent = function(agentId) {
     heartbeatAgentId = agentId || '';
     renderHeartbeat($('#page-container'));
+  };
+
+  window.triggerHeartbeat = async function(agentId) {
+    try {
+      const result = await POST('/api/heartbeat/run', { agent_id: agentId });
+      renderHeartbeat($('#page-container'));
+    } catch (err) {
+      alert('Heartbeat trigger failed: ' + (err.message || err));
+    }
   };
 
   /* Settings */
