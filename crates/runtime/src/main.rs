@@ -11,7 +11,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 use config::{default_config_path, ensure_runtime_dirs, load_config, RuntimeConfig};
-use domain::ChatType;
+use domain::{ChatType, RunKind};
 use observer::{
     bump_component_restart, log_startup_banner, mark_component_disabled, mark_component_error,
     mark_component_ok, FileEventSink,
@@ -230,6 +230,7 @@ async fn main() -> Result<()> {
                 from_agent: None,
                 files: vec![],
                 chain_depth: 0,
+                run_kind: RunKind::Message,
             };
             let path = enqueue_message(&config, msg).await?;
             info!(path = %path.display(), "queued message");

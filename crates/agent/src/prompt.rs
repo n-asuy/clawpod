@@ -356,6 +356,7 @@ mod tests {
             provider_id: None,
             system_prompt: None,
             prompt_file: None,
+            heartbeat: None,
         }
     }
 

@@ -3,6 +3,7 @@ use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use agent::resolve_heartbeat_file;
 use anyhow::{bail, Context, Result};
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::sse::{Event, Sse};
@@ -127,7 +128,7 @@ struct PostChatroomRequest {
 const EDITABLE_FILES: &[(&str, &str)] = &[
     (".clawpod", "SOUL.md"),
     ("", "AGENTS.md"),
-    ("", "heartbeat.md"),
+    ("", "HEARTBEAT.md"),
 ];
 
 pub async fn run(
@@ -753,8 +754,16 @@ async fn list_heartbeat_runs(
     Ok(Json(json!({
         "config": {
             "enabled": config.heartbeat.enabled,
+            "every": &config.heartbeat.every,
             "interval_sec": config.heartbeat.interval_sec,
-            "sender": config.heartbeat.sender,
+            "sender": &config.heartbeat.sender,
+            "target": &config.heartbeat.target,
+            "to": &config.heartbeat.to,
+            "account_id": &config.heartbeat.account_id,
+            "ack_max_chars": config.heartbeat.ack_max_chars,
+            "direct_policy": config.heartbeat.direct_policy,
+            "light_context": config.heartbeat.light_context,
+            "isolated_session": config.heartbeat.isolated_session,
         },
         "runs": runs,
     })))
@@ -798,7 +807,9 @@ async fn list_agent_files(
     let agent_root = config.resolve_agent_workdir(&agent_id);
     let mut files = vec![];
     for &(subdir, name) in EDITABLE_FILES {
-        let path = if subdir.is_empty() {
+        let path = if name == "HEARTBEAT.md" {
+            resolve_heartbeat_file(&agent_root)
+        } else if subdir.is_empty() {
             agent_root.join(name)
         } else {
             agent_root.join(subdir).join(name)
@@ -869,7 +880,9 @@ fn resolve_workspace_file(
     for &(subdir, name) in EDITABLE_FILES {
         if name == filename {
             let agent_root = config.resolve_agent_workdir(agent_id);
-            let path = if subdir.is_empty() {
+            let path = if name == "HEARTBEAT.md" {
+                resolve_heartbeat_file(&agent_root)
+            } else if subdir.is_empty() {
                 agent_root.join(name)
             } else {
                 agent_root.join(subdir).join(name)

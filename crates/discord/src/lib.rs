@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use config::{evaluate_ingress_policy, DiscordConfig, IngressDecision, RuntimeConfig};
-use domain::ChatType;
+use domain::{ChatType, RunKind};
 use observer::{mark_component_disabled, mark_component_error, mark_component_ok};
 use queue::{
     ack_outgoing_message, enqueue_message, enqueue_outgoing_message, list_outgoing_messages,
@@ -240,6 +240,7 @@ async fn handle_message(
             from_agent: None,
             files,
             chain_depth: 0,
+            run_kind: RunKind::Message,
         },
     )
     .await?;

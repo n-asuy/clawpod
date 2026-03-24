@@ -7,8 +7,8 @@ use std::{
 use anyhow::{bail, Context, Result};
 use dirs_next::home_dir;
 use domain::{
-    AgentConfig, BindingRule, ChatType, DmScope, ProviderHarness, ProviderKind, QueueMode,
-    TeamConfig,
+    AgentConfig, BindingRule, ChatType, DmScope, HeartbeatActiveHours, HeartbeatDirectPolicy,
+    ProviderHarness, ProviderKind, QueueMode, TeamConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -158,20 +158,63 @@ impl Default for RunnerConfig {
 pub struct HeartbeatConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_heartbeat_every")]
+    pub every: String,
     #[serde(default = "default_heartbeat_interval_sec")]
     pub interval_sec: u64,
     #[serde(default = "default_heartbeat_sender")]
     pub sender: String,
+    #[serde(default = "default_heartbeat_target")]
+    pub target: String,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default, alias = "accountId")]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default = "default_heartbeat_ack_max_chars", alias = "ackMaxChars")]
+    pub ack_max_chars: usize,
+    #[serde(default, alias = "directPolicy")]
+    pub direct_policy: HeartbeatDirectPolicy,
+    #[serde(default, alias = "includeReasoning")]
+    pub include_reasoning: bool,
+    #[serde(default, alias = "lightContext")]
+    pub light_context: bool,
+    #[serde(default, alias = "isolatedSession")]
+    pub isolated_session: bool,
+    #[serde(default, alias = "activeHours")]
+    pub active_hours: Option<HeartbeatActiveHours>,
+    #[serde(default)]
+    pub session: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            every: default_heartbeat_every(),
             interval_sec: default_heartbeat_interval_sec(),
             sender: default_heartbeat_sender(),
+            target: default_heartbeat_target(),
+            to: None,
+            account_id: None,
+            prompt: None,
+            ack_max_chars: default_heartbeat_ack_max_chars(),
+            direct_policy: HeartbeatDirectPolicy::Allow,
+            include_reasoning: false,
+            light_context: false,
+            isolated_session: false,
+            active_hours: None,
+            session: None,
+            model: None,
         }
     }
+}
+
+fn default_heartbeat_every() -> String {
+    "30m".to_string()
 }
 
 fn default_heartbeat_interval_sec() -> u64 {
@@ -180,6 +223,65 @@ fn default_heartbeat_interval_sec() -> u64 {
 
 fn default_heartbeat_sender() -> String {
     "Heartbeat".to_string()
+}
+
+fn default_heartbeat_target() -> String {
+    "none".to_string()
+}
+
+fn default_heartbeat_ack_max_chars() -> usize {
+    300
+}
+
+fn default_heartbeat_prompt_text() -> String {
+    "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelHeartbeatVisibilityConfig {
+    #[serde(default, alias = "showOk")]
+    pub show_ok: Option<bool>,
+    #[serde(default, alias = "showAlerts")]
+    pub show_alerts: Option<bool>,
+    #[serde(default, alias = "useIndicator")]
+    pub use_indicator: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedHeartbeatVisibility {
+    pub show_ok: bool,
+    pub show_alerts: bool,
+    pub use_indicator: bool,
+}
+
+impl Default for ResolvedHeartbeatVisibility {
+    fn default() -> Self {
+        Self {
+            show_ok: false,
+            show_alerts: true,
+            use_indicator: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedHeartbeatConfig {
+    pub enabled: bool,
+    pub every: String,
+    pub interval_sec: u64,
+    pub sender: String,
+    pub target: String,
+    pub to: Option<String>,
+    pub account_id: Option<String>,
+    pub prompt: String,
+    pub ack_max_chars: usize,
+    pub direct_policy: HeartbeatDirectPolicy,
+    pub include_reasoning: bool,
+    pub light_context: bool,
+    pub isolated_session: bool,
+    pub active_hours: Option<HeartbeatActiveHours>,
+    pub session: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +304,8 @@ pub struct TelegramConfig {
     pub bot_token_env: Option<String>,
     #[serde(default)]
     pub access: Option<ChannelAccessConfig>,
+    #[serde(default)]
+    pub heartbeat: Option<ChannelHeartbeatVisibilityConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -216,6 +320,8 @@ pub struct DiscordConfig {
     pub mention_only: bool,
     #[serde(default)]
     pub access: Option<ChannelAccessConfig>,
+    #[serde(default)]
+    pub heartbeat: Option<ChannelHeartbeatVisibilityConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -230,6 +336,14 @@ pub struct SlackConfig {
     pub app_token_env: Option<String>,
     #[serde(default)]
     pub access: Option<ChannelAccessConfig>,
+    #[serde(default)]
+    pub heartbeat: Option<ChannelHeartbeatVisibilityConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelsDefaultsConfig {
+    #[serde(default)]
+    pub heartbeat: Option<ChannelHeartbeatVisibilityConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -381,6 +495,8 @@ pub fn evaluate_ingress_policy(
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChannelsConfig {
+    #[serde(default)]
+    pub defaults: Option<ChannelsDefaultsConfig>,
     pub telegram: Option<TelegramConfig>,
     pub discord: Option<DiscordConfig>,
     pub slack: Option<SlackConfig>,
@@ -429,6 +545,7 @@ impl Default for RuntimeConfig {
                 provider_id: None,
                 system_prompt: None,
                 prompt_file: None,
+                heartbeat: None,
             },
         );
 
@@ -464,13 +581,25 @@ impl RuntimeConfig {
         if self.daemon.max_concurrent_runs == 0 {
             bail!("daemon.max_concurrent_runs must be at least 1");
         }
-        if self.heartbeat.interval_sec == 0 {
-            bail!("heartbeat.interval_sec must be at least 1");
+        if parse_heartbeat_duration(&self.heartbeat.every).is_none() {
+            bail!("heartbeat.every must be a duration like 30m, 1h, 10s, or 0m");
         }
 
         for (provider_id, _provider) in &self.custom_providers {
             if self.custom_provider_api_key(provider_id)?.is_none() {
                 bail!("custom_providers.{provider_id} requires api_key or api_key_env");
+            }
+        }
+
+        for (agent_id, agent) in &self.agents {
+            if let Some(heartbeat) = &agent.heartbeat {
+                if let Some(every) = &heartbeat.every {
+                    if parse_heartbeat_duration(every).is_none() {
+                        bail!(
+                            "agents.{agent_id}.heartbeat.every must be a duration like 30m, 1h, 10s, or 0m"
+                        );
+                    }
+                }
             }
         }
 
@@ -681,6 +810,180 @@ impl RuntimeConfig {
                     .and_then(|prev| prev.api_key.as_ref()),
             );
         }
+    }
+
+    pub fn default_agent_id(&self) -> Option<String> {
+        if self.agents.contains_key("default") {
+            return Some("default".to_string());
+        }
+        self.agents.keys().next().cloned()
+    }
+
+    pub fn heartbeat_agent_ids(&self) -> Vec<String> {
+        let explicit = self
+            .agents
+            .iter()
+            .filter_map(|(agent_id, agent)| agent.heartbeat.as_ref().map(|_| agent_id.clone()))
+            .collect::<Vec<_>>();
+        if explicit.is_empty() {
+            self.default_agent_id().into_iter().collect()
+        } else {
+            explicit
+        }
+    }
+
+    pub fn resolve_heartbeat_config(&self, agent_id: &str) -> Option<ResolvedHeartbeatConfig> {
+        let agent = self.agents.get(agent_id)?;
+        let defaults = &self.heartbeat;
+        let overrides = agent.heartbeat.as_ref();
+
+        let every = overrides
+            .and_then(|cfg| cfg.every.clone())
+            .unwrap_or_else(|| defaults.every.clone());
+        let interval_sec = resolve_heartbeat_interval_seconds(
+            Some(every.as_str()),
+            overrides
+                .and_then(|cfg| cfg.interval_sec)
+                .or(Some(defaults.interval_sec)),
+        )
+        .unwrap_or(0);
+
+        Some(ResolvedHeartbeatConfig {
+            enabled: overrides
+                .and_then(|cfg| cfg.enabled)
+                .unwrap_or(defaults.enabled),
+            every,
+            interval_sec,
+            sender: overrides
+                .and_then(|cfg| cfg.sender.clone())
+                .unwrap_or_else(|| defaults.sender.clone()),
+            target: overrides
+                .and_then(|cfg| cfg.target.clone())
+                .unwrap_or_else(|| defaults.target.clone()),
+            to: overrides
+                .and_then(|cfg| cfg.to.clone())
+                .or_else(|| defaults.to.clone()),
+            account_id: overrides
+                .and_then(|cfg| cfg.account_id.clone())
+                .or_else(|| defaults.account_id.clone()),
+            prompt: resolve_heartbeat_prompt(
+                overrides
+                    .and_then(|cfg| cfg.prompt.as_deref())
+                    .or(defaults.prompt.as_deref()),
+            ),
+            ack_max_chars: overrides
+                .and_then(|cfg| cfg.ack_max_chars)
+                .unwrap_or(defaults.ack_max_chars),
+            direct_policy: overrides
+                .and_then(|cfg| cfg.direct_policy)
+                .unwrap_or(defaults.direct_policy),
+            include_reasoning: overrides
+                .and_then(|cfg| cfg.include_reasoning)
+                .unwrap_or(defaults.include_reasoning),
+            light_context: overrides
+                .and_then(|cfg| cfg.light_context)
+                .unwrap_or(defaults.light_context),
+            isolated_session: overrides
+                .and_then(|cfg| cfg.isolated_session)
+                .unwrap_or(defaults.isolated_session),
+            active_hours: overrides
+                .and_then(|cfg| cfg.active_hours.clone())
+                .or_else(|| defaults.active_hours.clone()),
+            session: overrides
+                .and_then(|cfg| cfg.session.clone())
+                .or_else(|| defaults.session.clone()),
+            model: overrides
+                .and_then(|cfg| cfg.model.clone())
+                .or_else(|| defaults.model.clone()),
+        })
+    }
+
+    pub fn resolve_heartbeat_visibility(
+        &self,
+        channel: &str,
+        _account_id: Option<&str>,
+    ) -> ResolvedHeartbeatVisibility {
+        let defaults = self
+            .channels
+            .defaults
+            .as_ref()
+            .and_then(|cfg| cfg.heartbeat.as_ref());
+        let channel_cfg = match channel {
+            "telegram" => self
+                .channels
+                .telegram
+                .as_ref()
+                .and_then(|cfg| cfg.heartbeat.as_ref()),
+            "discord" => self
+                .channels
+                .discord
+                .as_ref()
+                .and_then(|cfg| cfg.heartbeat.as_ref()),
+            "slack" => self
+                .channels
+                .slack
+                .as_ref()
+                .and_then(|cfg| cfg.heartbeat.as_ref()),
+            _ => None,
+        };
+        let base = ResolvedHeartbeatVisibility::default();
+        ResolvedHeartbeatVisibility {
+            show_ok: channel_cfg
+                .and_then(|cfg| cfg.show_ok)
+                .or_else(|| defaults.and_then(|cfg| cfg.show_ok))
+                .unwrap_or(base.show_ok),
+            show_alerts: channel_cfg
+                .and_then(|cfg| cfg.show_alerts)
+                .or_else(|| defaults.and_then(|cfg| cfg.show_alerts))
+                .unwrap_or(base.show_alerts),
+            use_indicator: channel_cfg
+                .and_then(|cfg| cfg.use_indicator)
+                .or_else(|| defaults.and_then(|cfg| cfg.use_indicator))
+                .unwrap_or(base.use_indicator),
+        }
+    }
+}
+
+pub fn resolve_heartbeat_prompt(raw: Option<&str>) -> String {
+    let trimmed = raw.unwrap_or_default().trim();
+    if trimmed.is_empty() {
+        default_heartbeat_prompt_text()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub fn resolve_heartbeat_interval_seconds(
+    raw_every: Option<&str>,
+    fallback: Option<u64>,
+) -> Option<u64> {
+    if let Some(raw) = raw_every {
+        if let Some(seconds) = parse_heartbeat_duration(raw) {
+            return Some(seconds);
+        }
+    }
+    fallback.filter(|value| *value > 0)
+}
+
+fn parse_heartbeat_duration(raw: &str) -> Option<u64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let split_idx = trimmed
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(trimmed.len());
+    let (num_part, unit_part) = trimmed.split_at(split_idx);
+    let value = num_part.parse::<u64>().ok()?;
+    if unit_part.is_empty() {
+        return Some(value.saturating_mul(60));
+    }
+    match unit_part.trim().to_ascii_lowercase().as_str() {
+        "s" => Some(value),
+        "m" => Some(value.saturating_mul(60)),
+        "h" => Some(value.saturating_mul(60 * 60)),
+        "d" => Some(value.saturating_mul(60 * 60 * 24)),
+        _ => None,
     }
 }
 
@@ -983,11 +1286,24 @@ pub fn read_codex_access_token() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::{
         decode_jwt_exp, evaluate_ingress_policy, ChannelAccessConfig, DirectMessagePolicy,
         GroupPolicy, IngressDecision,
     };
     use domain::ChatType;
+
+    fn unique_temp_dir(name: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        std::env::temp_dir().join(format!("clawpod-test-{name}-{nonce}"))
+    }
+
+    static CODEX_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn allowlist_dm_requires_explicit_sender() {
@@ -1080,6 +1396,7 @@ mod tests {
 
     #[test]
     fn codex_auth_missing_file() {
+        let _guard = CODEX_ENV_LOCK.lock().unwrap();
         // Point to a nonexistent path
         std::env::set_var("CODEX_HOME", "/tmp/clawpod-test-nonexistent-dir");
         let status = super::check_codex_auth();
@@ -1094,7 +1411,8 @@ mod tests {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
 
-        let tmp = std::env::temp_dir().join("clawpod-test-codex-valid");
+        let _guard = CODEX_ENV_LOCK.lock().unwrap();
+        let tmp = unique_temp_dir("codex-valid");
         let _ = std::fs::create_dir_all(&tmp);
 
         let exp = chrono::Utc::now().timestamp() + 3600;
@@ -1131,7 +1449,8 @@ mod tests {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
 
-        let tmp = std::env::temp_dir().join("clawpod-test-codex-expired");
+        let _guard = CODEX_ENV_LOCK.lock().unwrap();
+        let tmp = unique_temp_dir("codex-expired");
         let _ = std::fs::create_dir_all(&tmp);
 
         let exp = chrono::Utc::now().timestamp() - 100;

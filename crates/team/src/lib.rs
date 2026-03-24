@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 use domain::{
-    AgentConfig, ChainResult, ChainState, ChainStep, ProviderKind, RunRequest, Runner, TeamConfig,
+    AgentConfig, ChainResult, ChainState, ChainStep, ProviderKind, RunKind, RunRequest, Runner,
+    TeamConfig,
 };
 use futures::future::join_all;
 use routing::extract_teammate_mentions;
@@ -152,6 +153,7 @@ pub async fn execute_team_chain(
                         prompt: format!("[Message from teammate @{sender}]:\n{}", mention.message),
                         continue_session: true,
                         metadata,
+                        run_kind: RunKind::Message,
                     };
 
                     match runner.run(fan_req).await {
@@ -232,6 +234,7 @@ fn build_run_request(
         prompt: prompt.to_string(),
         continue_session,
         metadata,
+        run_kind: RunKind::Message,
     }
 }
 

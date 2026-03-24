@@ -4,15 +4,17 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use agent::{
-    clear_reset_flag, ensure_agent_workspace, ensure_session_workspace, PromptContext,
-    SystemPromptBuilder,
+    clear_reset_flag, ensure_agent_workspace, ensure_lightweight_session_workspace,
+    ensure_session_workspace, PromptContext, SystemPromptBuilder,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use config::{CustomProviderConfig, RuntimeConfig};
+use config::{
+    CustomProviderConfig, ResolvedHeartbeatConfig, ResolvedHeartbeatVisibility, RuntimeConfig,
+};
 use domain::{
-    AgentConfig, ChatType, ChatroomPost, InboundEvent, OutboundEvent, ProviderHarness,
-    ProviderKind, RunRequest, RunStatus, Runner,
+    AgentConfig, ChatType, ChatroomPost, HeartbeatDirectPolicy, InboundEvent, OutboundEvent,
+    ProviderHarness, ProviderKind, RunKind, RunRequest, RunStatus, Runner,
 };
 use observer::FileEventSink;
 use plugins::{dispatch_event, transform_incoming, transform_outgoing, HookContext};
@@ -20,7 +22,7 @@ use regex::Regex;
 use routing::{extract_chatroom_posts, find_team_for_agent, parse_agent_routing, resolve_binding};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use session::build_session_key;
+use session::{build_agent_main_session_key, build_session_key};
 use store::StateStore;
 use tokio::fs;
 use tokio::sync::{Mutex, Semaphore};
@@ -47,6 +49,8 @@ pub struct EnqueueMessage {
     pub files: Vec<String>,
     #[serde(default)]
     pub chain_depth: u32,
+    #[serde(default)]
+    pub run_kind: RunKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +82,8 @@ struct IncomingQueueEnvelope {
     last_error: Option<String>,
     #[serde(default)]
     chain_depth: u32,
+    #[serde(default)]
+    run_kind: RunKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +120,29 @@ struct PreparedOutbound {
     message: String,
     files: Vec<String>,
     metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct HeartbeatDeliveryTarget {
+    channel: Option<String>,
+    recipient_id: Option<String>,
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct HeartbeatExecution {
+    config: ResolvedHeartbeatConfig,
+    base_session_key: String,
+    run_session_key: String,
+    previous_updated_at: Option<String>,
+    delivery: HeartbeatDeliveryTarget,
+    visibility: ResolvedHeartbeatVisibility,
+}
+
+#[derive(Debug, Clone)]
+struct HeartbeatTextResolution {
+    should_skip: bool,
+    text: String,
 }
 
 #[derive(Clone)]
@@ -356,20 +385,90 @@ impl QueueProcessor {
             self.store.clear_agent_sessions(&agent_id)?;
         }
 
-        let session_key = build_session_key(
-            &agent_id,
-            &event,
-            self.config.session.dm_scope,
-            &self.config.session.main_key,
-        );
-        let session_dir = ensure_session_workspace(&agent_root, &session_key)?;
+        let heartbeat_execution = if event.run_kind == RunKind::Heartbeat {
+            let heartbeat = self
+                .config
+                .resolve_heartbeat_config(&agent_id)
+                .ok_or_else(|| anyhow!("heartbeat config not found for agent: {agent_id}"))?;
+            let base_session_key = resolve_heartbeat_session_key(
+                &agent_id,
+                heartbeat.session.as_deref(),
+                &self.config.session.main_key,
+            );
+            let session_entry = self.store.get_session(&base_session_key)?;
+            let delivery = resolve_heartbeat_delivery_target(session_entry.as_ref(), &heartbeat);
+            let visibility = delivery
+                .channel
+                .as_deref()
+                .map(|channel| {
+                    self.config
+                        .resolve_heartbeat_visibility(channel, delivery.account_id.as_deref())
+                })
+                .unwrap_or_default();
+            let previous_updated_at = session_entry
+                .as_ref()
+                .map(|session| session.updated_at.clone());
+            let run_session_key = if heartbeat.isolated_session {
+                format!("{base_session_key}:heartbeat:{}", Uuid::new_v4().simple())
+            } else {
+                base_session_key.clone()
+            };
+            Some(HeartbeatExecution {
+                config: heartbeat,
+                base_session_key,
+                run_session_key,
+                previous_updated_at,
+                delivery,
+                visibility,
+            })
+        } else {
+            None
+        };
 
-        let session_lock = self.session_lock(session_key.clone()).await;
+        let session_key = heartbeat_execution
+            .as_ref()
+            .map(|heartbeat| heartbeat.run_session_key.clone())
+            .unwrap_or_else(|| {
+                build_session_key(
+                    &agent_id,
+                    &event,
+                    self.config.session.dm_scope,
+                    &self.config.session.main_key,
+                )
+            });
+        let session_dir = if let Some(heartbeat) = &heartbeat_execution {
+            if heartbeat.config.light_context {
+                ensure_lightweight_session_workspace(&agent_root, &session_key)?
+            } else {
+                ensure_session_workspace(&agent_root, &session_key)?
+            }
+        } else {
+            ensure_session_workspace(&agent_root, &session_key)?
+        };
+
+        let session_lock = self
+            .session_lock(
+                heartbeat_execution
+                    .as_ref()
+                    .map(|heartbeat| heartbeat.base_session_key.clone())
+                    .unwrap_or_else(|| session_key.clone()),
+            )
+            .await;
         let _session_guard = session_lock.lock().await;
         let _global_guard = self.global_limit.acquire().await?;
 
         let continue_session = self.store.session_exists(&session_key)?;
         self.store.touch_session(&session_key, &agent_id)?;
+        if event.run_kind != RunKind::Heartbeat && event.channel != "chatroom" {
+            self.store.update_session_route(
+                &session_key,
+                &agent_id,
+                &event.channel,
+                &event.peer_id,
+                event.account_id.as_deref(),
+                chat_type_str(event.chat_type),
+            )?;
+        }
 
         let task_id = Uuid::new_v4();
 
@@ -389,8 +488,19 @@ impl QueueProcessor {
         let heartbeat_started_at = Utc::now();
         let heartbeat_started_mono = Instant::now();
 
-        let metadata =
-            self.build_run_metadata_for_agent(&agent_id, Some(&incoming_hook.metadata))?;
+        let mut metadata = self.build_run_metadata_for_agent(
+            &agent_id,
+            Some(&incoming_hook.metadata),
+            &session_dir,
+            event.run_kind,
+            heartbeat_execution
+                .as_ref()
+                .map(|heartbeat| heartbeat.config.light_context)
+                .unwrap_or(false),
+        )?;
+        if let Some(heartbeat) = &heartbeat_execution {
+            apply_model_override(&mut metadata, heartbeat.config.model.as_deref());
+        }
         let outcome = self
             .run_single_task(
                 task_id,
@@ -401,12 +511,13 @@ impl QueueProcessor {
                 prompt,
                 continue_session,
                 metadata,
+                event.run_kind,
             )
             .await;
 
         match outcome {
             Ok(text) => {
-                if event.channel == "heartbeat" {
+                if event.run_kind == RunKind::Heartbeat {
                     self.record_heartbeat_run(
                         &agent_id,
                         &event.text,
@@ -425,107 +536,142 @@ impl QueueProcessor {
                 }
 
                 // Extract teammate mentions and enqueue as separate messages (flat handoff)
-                if let Some(ref tid) = team_id {
-                    let next_depth = event.chain_depth + 1;
-                    let max_depth = self.config.chain.max_chain_steps as u32;
+                if event.run_kind != RunKind::Heartbeat {
+                    if let Some(ref tid) = team_id {
+                        let next_depth = event.chain_depth + 1;
+                        let max_depth = self.config.chain.max_chain_steps as u32;
 
-                    let handoffs = routing::extract_teammate_mentions(
-                        &text,
-                        &agent_id,
-                        event.from_agent.as_deref(),
-                        tid,
-                        &self.config.teams,
-                        &self.config.agents,
-                    );
-
-                    if !handoffs.is_empty() && next_depth > max_depth {
-                        warn!(
-                            depth = next_depth,
-                            max = max_depth,
-                            agent = %agent_id,
-                            "handoff chain depth exceeded — dropping further handoffs"
+                        let handoffs = routing::extract_teammate_mentions(
+                            &text,
+                            &agent_id,
+                            event.from_agent.as_deref(),
+                            tid,
+                            &self.config.teams,
+                            &self.config.agents,
                         );
-                    }
 
-                    for mention in &handoffs {
-                        if next_depth > max_depth {
-                            break;
+                        if !handoffs.is_empty() && next_depth > max_depth {
+                            warn!(
+                                depth = next_depth,
+                                max = max_depth,
+                                agent = %agent_id,
+                                "handoff chain depth exceeded — dropping further handoffs"
+                            );
                         }
 
-                        info!(
-                            from = %agent_id,
-                            to = %mention.teammate_id,
-                            depth = next_depth,
-                            "handoff enqueued"
-                        );
-                        self.emit_event(
-                            "chain_handoff",
-                            json!({
-                                "team_id": tid,
-                                "from_agent": agent_id,
-                                "to_agent": mention.teammate_id,
-                                "chain_depth": next_depth,
-                            }),
-                        )
-                        .await?;
+                        for mention in &handoffs {
+                            if next_depth > max_depth {
+                                break;
+                            }
 
-                        let internal_msg = format!(
-                            "[Message from teammate @{}]:\n{}",
-                            agent_id, mention.message
-                        );
-                        enqueue_message(
-                            &self.config,
-                            EnqueueMessage {
-                                channel: event.channel.clone(),
-                                sender: event.sender.clone(),
-                                sender_id: event.sender_id.clone(),
-                                message: internal_msg,
-                                message_id: format!(
-                                    "internal-{}-{}",
-                                    Uuid::new_v4().simple(),
-                                    mention.teammate_id
-                                ),
-                                timestamp_ms: Utc::now().timestamp_millis(),
-                                chat_type: event.chat_type,
-                                peer_id: event.peer_id.clone(),
-                                account_id: event.account_id.clone(),
-                                pre_routed_agent: Some(mention.teammate_id.clone()),
-                                from_agent: Some(agent_id.clone()),
-                                files: vec![],
-                                chain_depth: next_depth,
-                            },
-                        )
-                        .await?;
+                            info!(
+                                from = %agent_id,
+                                to = %mention.teammate_id,
+                                depth = next_depth,
+                                "handoff enqueued"
+                            );
+                            self.emit_event(
+                                "chain_handoff",
+                                json!({
+                                    "team_id": tid,
+                                    "from_agent": agent_id,
+                                    "to_agent": mention.teammate_id,
+                                    "chain_depth": next_depth,
+                                }),
+                            )
+                            .await?;
+
+                            let internal_msg = format!(
+                                "[Message from teammate @{}]:\n{}",
+                                agent_id, mention.message
+                            );
+                            enqueue_message(
+                                &self.config,
+                                EnqueueMessage {
+                                    channel: event.channel.clone(),
+                                    sender: event.sender.clone(),
+                                    sender_id: event.sender_id.clone(),
+                                    message: internal_msg,
+                                    message_id: format!(
+                                        "internal-{}-{}",
+                                        Uuid::new_v4().simple(),
+                                        mention.teammate_id
+                                    ),
+                                    timestamp_ms: Utc::now().timestamp_millis(),
+                                    chat_type: event.chat_type,
+                                    peer_id: event.peer_id.clone(),
+                                    account_id: event.account_id.clone(),
+                                    pre_routed_agent: Some(mention.teammate_id.clone()),
+                                    from_agent: Some(agent_id.clone()),
+                                    files: vec![],
+                                    chain_depth: next_depth,
+                                    run_kind: RunKind::Message,
+                                },
+                            )
+                            .await?;
+                        }
                     }
                 }
 
                 let display_text = convert_mentions_to_readable(&text, &agent_id);
-                let prepared = self
-                    .prepare_outbound_payload(
-                        &display_text,
+                if let Some(heartbeat) = &heartbeat_execution {
+                    self.handle_heartbeat_success(
+                        &event,
+                        &agent_id,
                         &session_dir,
-                        &HookContext {
-                            channel: event.channel.clone(),
-                            sender: event.sender.clone(),
-                            sender_id: Some(event.sender_id.clone()),
-                            message_id: event.message_id.clone(),
-                            original_message: event.text.clone(),
-                            agent_id: Some(agent_id.clone()),
-                        },
+                        heartbeat,
+                        &display_text,
+                        heartbeat_started_at,
                     )
                     .await?;
+                } else {
+                    let stripped = strip_message_heartbeat_token(
+                        &display_text,
+                        self.config.heartbeat.ack_max_chars,
+                    );
+                    if stripped.should_skip {
+                        self.emit_event(
+                            "message_suppressed",
+                            json!({
+                                "agent_id": agent_id,
+                                "reason": "heartbeat_token",
+                            }),
+                        )
+                        .await?;
+                        self.emit_event(
+                            "run_succeeded",
+                            json!({ "task_id": task_id, "agent_id": agent_id }),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                    let prepared = self
+                        .prepare_outbound_payload(
+                            &stripped.text,
+                            &session_dir,
+                            &HookContext {
+                                channel: event.channel.clone(),
+                                sender: event.sender.clone(),
+                                sender_id: Some(event.sender_id.clone()),
+                                message_id: event.message_id.clone(),
+                                original_message: event.text.clone(),
+                                agent_id: Some(agent_id.clone()),
+                            },
+                        )
+                        .await?;
 
-                let outbound = OutboundEvent {
-                    channel: event.channel.clone(),
-                    recipient_id: event.peer_id.clone(),
-                    message: prepared.message,
-                    message_id: event.message_id.clone(),
-                    original_message_id: event.message_id.clone(),
-                    agent_id: agent_id.clone(),
-                    files: prepared.files,
-                };
-                self.write_outgoing(&event, outbound, prepared.metadata)
-                    .await?;
+                    let outbound = OutboundEvent {
+                        channel: event.channel.clone(),
+                        recipient_id: event.peer_id.clone(),
+                        message: prepared.message,
+                        message_id: event.message_id.clone(),
+                        original_message_id: event.message_id.clone(),
+                        agent_id: agent_id.clone(),
+                        files: prepared.files,
+                    };
+                    self.write_outgoing(&event, outbound, prepared.metadata)
+                        .await?;
+                }
 
                 self.emit_event(
                     "run_succeeded",
@@ -535,7 +681,7 @@ impl QueueProcessor {
                 Ok(())
             }
             Err(err) => {
-                if event.channel == "heartbeat" {
+                if event.run_kind == RunKind::Heartbeat {
                     self.record_heartbeat_run(
                         &agent_id,
                         &event.text,
@@ -567,6 +713,7 @@ impl QueueProcessor {
         prompt: String,
         continue_session: bool,
         metadata: HashMap<String, String>,
+        run_kind: RunKind,
     ) -> Result<String> {
         let run_id = Uuid::new_v4();
         let agent = self.agent_or_err(agent_id)?;
@@ -588,6 +735,7 @@ impl QueueProcessor {
             prompt,
             continue_session,
             metadata,
+            run_kind,
         };
 
         self.store.record_run_start(
@@ -635,7 +783,7 @@ impl QueueProcessor {
         outbound: OutboundEvent,
         metadata: HashMap<String, String>,
     ) -> Result<()> {
-        if matches!(event.channel.as_str(), "chatroom" | "heartbeat") {
+        if event.channel == "chatroom" {
             return Ok(());
         }
 
@@ -653,6 +801,181 @@ impl QueueProcessor {
         )
         .await?;
         Ok(())
+    }
+
+    async fn handle_heartbeat_success(
+        &self,
+        event: &InboundEvent,
+        agent_id: &str,
+        session_dir: &Path,
+        heartbeat: &HeartbeatExecution,
+        display_text: &str,
+        started_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let normalized = strip_heartbeat_token(display_text, true, heartbeat.config.ack_max_chars);
+        if normalized.should_skip {
+            self.restore_heartbeat_session_timestamp(heartbeat)?;
+            if heartbeat.visibility.show_ok {
+                self.maybe_send_heartbeat_ok(event, agent_id, heartbeat)
+                    .await?;
+            }
+            if heartbeat.visibility.use_indicator {
+                self.emit_event(
+                    "heartbeat_delivery_skipped",
+                    json!({
+                        "agent_id": agent_id,
+                        "reason": "ack",
+                    }),
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
+        if self.is_duplicate_heartbeat(heartbeat, &normalized.text, started_at)? {
+            self.restore_heartbeat_session_timestamp(heartbeat)?;
+            if heartbeat.visibility.use_indicator {
+                self.emit_event(
+                    "heartbeat_delivery_skipped",
+                    json!({
+                        "agent_id": agent_id,
+                        "reason": "duplicate",
+                    }),
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
+        let Some(channel) = heartbeat.delivery.channel.as_deref() else {
+            self.restore_heartbeat_session_timestamp(heartbeat)?;
+            return Ok(());
+        };
+        let Some(recipient_id) = heartbeat.delivery.recipient_id.as_deref() else {
+            self.restore_heartbeat_session_timestamp(heartbeat)?;
+            return Ok(());
+        };
+        if !heartbeat.visibility.show_alerts {
+            self.restore_heartbeat_session_timestamp(heartbeat)?;
+            return Ok(());
+        }
+
+        let prepared = self
+            .prepare_outbound_payload(
+                &normalized.text,
+                session_dir,
+                &HookContext {
+                    channel: channel.to_string(),
+                    sender: heartbeat.config.sender.clone(),
+                    sender_id: Some("heartbeat".to_string()),
+                    message_id: event.message_id.clone(),
+                    original_message: event.text.clone(),
+                    agent_id: Some(agent_id.to_string()),
+                },
+            )
+            .await?;
+
+        if prepared.message.trim().is_empty() && prepared.files.is_empty() {
+            self.restore_heartbeat_session_timestamp(heartbeat)?;
+            if heartbeat.visibility.show_ok {
+                self.maybe_send_heartbeat_ok(event, agent_id, heartbeat)
+                    .await?;
+            }
+            return Ok(());
+        }
+
+        enqueue_outgoing_message(
+            &self.config,
+            channel,
+            &heartbeat.config.sender,
+            recipient_id,
+            &prepared.message,
+            &event.text,
+            &event.message_id,
+            agent_id,
+            prepared.files,
+            prepared.metadata,
+        )
+        .await?;
+
+        self.store.record_heartbeat_delivery(
+            &heartbeat.base_session_key,
+            agent_id,
+            Some(&normalized.text),
+            Some(started_at.timestamp_millis()),
+        )?;
+
+        if heartbeat.visibility.use_indicator {
+            self.emit_event(
+                "heartbeat_delivery_sent",
+                json!({
+                    "agent_id": agent_id,
+                    "channel": channel,
+                    "recipient_id": recipient_id,
+                }),
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn maybe_send_heartbeat_ok(
+        &self,
+        event: &InboundEvent,
+        agent_id: &str,
+        heartbeat: &HeartbeatExecution,
+    ) -> Result<()> {
+        let Some(channel) = heartbeat.delivery.channel.as_deref() else {
+            return Ok(());
+        };
+        let Some(recipient_id) = heartbeat.delivery.recipient_id.as_deref() else {
+            return Ok(());
+        };
+        enqueue_outgoing_message(
+            &self.config,
+            channel,
+            &heartbeat.config.sender,
+            recipient_id,
+            "HEARTBEAT_OK",
+            &event.text,
+            &format!("{}-heartbeat-ok", event.message_id),
+            agent_id,
+            vec![],
+            HashMap::new(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn restore_heartbeat_session_timestamp(&self, heartbeat: &HeartbeatExecution) -> Result<()> {
+        if let Some(previous_updated_at) = &heartbeat.previous_updated_at {
+            self.store
+                .restore_session_updated_at(&heartbeat.run_session_key, previous_updated_at)?;
+        }
+        Ok(())
+    }
+
+    fn is_duplicate_heartbeat(
+        &self,
+        heartbeat: &HeartbeatExecution,
+        text: &str,
+        started_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        if text.trim().is_empty() {
+            return Ok(false);
+        }
+        let Some(session) = self.store.get_session(&heartbeat.base_session_key)? else {
+            return Ok(false);
+        };
+        let Some(previous_text) = session.last_heartbeat_text.as_deref() else {
+            return Ok(false);
+        };
+        let Some(previous_sent_at) = session.last_heartbeat_sent_at else {
+            return Ok(false);
+        };
+        Ok(previous_text.trim() == text.trim()
+            && started_at.timestamp_millis() - previous_sent_at < 24 * 60 * 60 * 1000)
     }
 
     async fn record_heartbeat_run(
@@ -845,6 +1168,7 @@ impl QueueProcessor {
             pre_routed_agent: envelope.agent.clone(),
             from_agent: envelope.from_agent.clone(),
             chain_depth: envelope.chain_depth,
+            run_kind: envelope.run_kind,
         })
     }
 
@@ -932,13 +1256,19 @@ impl QueueProcessor {
         &self,
         agent_id: &str,
         plugin_metadata: Option<&HashMap<String, String>>,
+        workspace_dir: &Path,
+        run_kind: RunKind,
+        light_context: bool,
     ) -> Result<HashMap<String, String>> {
         let agent = self.agent_or_err(agent_id)?;
         let mut metadata = plugin_metadata.cloned().unwrap_or_default();
 
-        if let Some(preamble) = self.load_system_preamble(agent_id, agent)? {
+        if let Some(preamble) =
+            self.load_system_preamble(agent_id, agent, workspace_dir, light_context)?
+        {
             metadata.insert("system_preamble".to_string(), preamble);
         }
+        metadata.insert("run_kind".to_string(), run_kind_str(run_kind).to_string());
 
         if let Some(provider_id) = &agent.provider_id {
             let provider = self
@@ -969,7 +1299,13 @@ impl QueueProcessor {
         Ok(metadata)
     }
 
-    fn load_system_preamble(&self, agent_id: &str, agent: &AgentConfig) -> Result<Option<String>> {
+    fn load_system_preamble(
+        &self,
+        agent_id: &str,
+        agent: &AgentConfig,
+        workspace_dir: &Path,
+        light_context: bool,
+    ) -> Result<Option<String>> {
         // Collect user-provided prompt sections (system_prompt + prompt_file)
         let mut user_sections = vec![];
         if let Some(system_prompt) = &agent.system_prompt {
@@ -979,11 +1315,12 @@ impl QueueProcessor {
         }
 
         if let Some(prompt_file) = &agent.prompt_file {
-            let agent_root = self.config.resolve_agent_workdir(agent_id);
             let prompt_path = if Path::new(prompt_file).is_absolute() {
                 PathBuf::from(prompt_file)
             } else {
-                agent_root.join(prompt_file)
+                self.config
+                    .resolve_agent_workdir(agent_id)
+                    .join(prompt_file)
             };
             let content = std::fs::read_to_string(&prompt_path).with_context(|| {
                 format!("failed to read prompt file: {}", prompt_path.display())
@@ -999,13 +1336,16 @@ impl QueueProcessor {
             Some(user_sections.join("\n\n"))
         };
 
-        let agent_root = self.config.resolve_agent_workdir(agent_id);
         let ctx = PromptContext {
-            workspace_dir: agent_root.as_path(),
+            workspace_dir,
             agent_id,
             agents: &self.config.agents,
             teams: &self.config.teams,
-            user_system_prompt: user_prompt.as_deref(),
+            user_system_prompt: if light_context {
+                None
+            } else {
+                user_prompt.as_deref()
+            },
         };
         let full = SystemPromptBuilder::with_defaults().build(&ctx)?;
 
@@ -1041,6 +1381,7 @@ pub async fn enqueue_message(config: &RuntimeConfig, msg: EnqueueMessage) -> Res
         "available_at_ms": available_at_ms,
         "last_error": null,
         "chain_depth": msg.chain_depth,
+        "run_kind": msg.run_kind,
     });
 
     let file_name = queued_file_name(available_at_ms);
@@ -1076,6 +1417,7 @@ pub async fn enqueue_chatroom_message(
             from_agent: Some(from_agent.to_string()),
             files: vec![],
             chain_depth: 0,
+            run_kind: RunKind::Message,
         },
     )
     .await
@@ -1193,6 +1535,227 @@ fn chat_type_to_str(chat_type: ChatType) -> &'static str {
         ChatType::Group => "group",
         ChatType::Thread => "thread",
     }
+}
+
+fn chat_type_str(chat_type: ChatType) -> &'static str {
+    chat_type_to_str(chat_type)
+}
+
+fn parse_stored_chat_type(raw: Option<&str>) -> Option<ChatType> {
+    match raw {
+        Some("direct") => Some(ChatType::Direct),
+        Some("group") => Some(ChatType::Group),
+        Some("thread") => Some(ChatType::Thread),
+        _ => None,
+    }
+}
+
+fn run_kind_str(run_kind: RunKind) -> &'static str {
+    match run_kind {
+        RunKind::Message => "message",
+        RunKind::Heartbeat => "heartbeat",
+    }
+}
+
+fn resolve_heartbeat_session_key(
+    agent_id: &str,
+    session_override: Option<&str>,
+    main_key: &str,
+) -> String {
+    let trimmed = session_override.unwrap_or_default().trim();
+    if trimmed.is_empty() || matches!(trimmed, "main" | "global") {
+        return build_agent_main_session_key(agent_id, main_key);
+    }
+    if trimmed.starts_with("agent:") {
+        return trimmed.to_string();
+    }
+    format!("agent:{agent_id}:{trimmed}")
+}
+
+fn resolve_heartbeat_delivery_target(
+    session: Option<&store::SessionSummary>,
+    heartbeat: &ResolvedHeartbeatConfig,
+) -> HeartbeatDeliveryTarget {
+    let target = heartbeat.target.trim().to_ascii_lowercase();
+    if target.is_empty() || target == "none" {
+        return HeartbeatDeliveryTarget {
+            channel: None,
+            recipient_id: None,
+            account_id: heartbeat.account_id.clone(),
+        };
+    }
+
+    if target == "last" {
+        let Some(session) = session else {
+            return HeartbeatDeliveryTarget {
+                channel: None,
+                recipient_id: None,
+                account_id: heartbeat.account_id.clone(),
+            };
+        };
+        let chat_type = parse_stored_chat_type(session.last_chat_type.as_deref());
+        if heartbeat.direct_policy == HeartbeatDirectPolicy::Block
+            && chat_type == Some(ChatType::Direct)
+        {
+            return HeartbeatDeliveryTarget {
+                channel: None,
+                recipient_id: None,
+                account_id: heartbeat
+                    .account_id
+                    .clone()
+                    .or_else(|| session.last_account_id.clone()),
+            };
+        }
+        return HeartbeatDeliveryTarget {
+            channel: session.last_channel.clone(),
+            recipient_id: session.last_peer_id.clone(),
+            account_id: heartbeat
+                .account_id
+                .clone()
+                .or_else(|| session.last_account_id.clone()),
+        };
+    }
+
+    let session_chat_type =
+        session.and_then(|value| parse_stored_chat_type(value.last_chat_type.as_deref()));
+    let recipient_id = heartbeat
+        .to
+        .clone()
+        .map(|value| normalize_explicit_target(&value))
+        .or_else(|| {
+            session.and_then(|value| {
+                if value.last_channel.as_deref() == Some(target.as_str()) {
+                    value.last_peer_id.clone()
+                } else {
+                    None
+                }
+            })
+        });
+    let chat_type = infer_chat_type_from_target(heartbeat.to.as_deref()).or(session_chat_type);
+    if heartbeat.direct_policy == HeartbeatDirectPolicy::Block
+        && chat_type == Some(ChatType::Direct)
+    {
+        return HeartbeatDeliveryTarget {
+            channel: None,
+            recipient_id: None,
+            account_id: heartbeat
+                .account_id
+                .clone()
+                .or_else(|| session.and_then(|value| value.last_account_id.clone())),
+        };
+    }
+    HeartbeatDeliveryTarget {
+        channel: Some(target),
+        recipient_id,
+        account_id: heartbeat
+            .account_id
+            .clone()
+            .or_else(|| session.and_then(|value| value.last_account_id.clone())),
+    }
+}
+
+fn infer_chat_type_from_target(raw: Option<&str>) -> Option<ChatType> {
+    let trimmed = raw?.trim();
+    if trimmed.starts_with("direct:") || trimmed.starts_with("user:") {
+        return Some(ChatType::Direct);
+    }
+    if trimmed.starts_with("group:") || trimmed.starts_with("channel:") {
+        return Some(ChatType::Group);
+    }
+    if trimmed.starts_with("thread:") || trimmed.contains('|') {
+        return Some(ChatType::Thread);
+    }
+    None
+}
+
+fn normalize_explicit_target(raw: &str) -> String {
+    let trimmed = raw.trim();
+    for prefix in ["direct:", "user:", "group:", "channel:", "thread:"] {
+        if let Some(value) = trimmed.strip_prefix(prefix) {
+            return value.trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn strip_message_heartbeat_token(raw: &str, ack_max_chars: usize) -> HeartbeatTextResolution {
+    strip_heartbeat_token(raw, false, ack_max_chars)
+}
+
+fn strip_heartbeat_token(
+    raw: &str,
+    heartbeat_mode: bool,
+    ack_max_chars: usize,
+) -> HeartbeatTextResolution {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return HeartbeatTextResolution {
+            should_skip: true,
+            text: String::new(),
+        };
+    }
+
+    let token = "HEARTBEAT_OK";
+    if !trimmed.contains(token) {
+        return HeartbeatTextResolution {
+            should_skip: false,
+            text: trimmed.to_string(),
+        };
+    }
+
+    let mut text = trimmed.to_string();
+    loop {
+        let current = text.trim().to_string();
+        if current.starts_with(token) {
+            text = current[token.len()..]
+                .trim_start_matches(|ch: char| ch.is_whitespace() || !ch.is_alphanumeric())
+                .to_string();
+            continue;
+        }
+        if let Some(prefix) = current.strip_suffix(token) {
+            text = prefix
+                .trim_end_matches(|ch: char| ch.is_whitespace() || !ch.is_alphanumeric())
+                .to_string();
+            continue;
+        }
+        break;
+    }
+
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return HeartbeatTextResolution {
+            should_skip: true,
+            text: String::new(),
+        };
+    }
+    if heartbeat_mode && collapsed.len() <= ack_max_chars {
+        return HeartbeatTextResolution {
+            should_skip: true,
+            text: String::new(),
+        };
+    }
+    HeartbeatTextResolution {
+        should_skip: false,
+        text: collapsed,
+    }
+}
+
+fn apply_model_override(metadata: &mut HashMap<String, String>, raw: Option<&str>) {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    if let Some((provider, model)) = raw.split_once('/') {
+        let provider = provider.trim().to_ascii_lowercase();
+        if matches!(
+            provider.as_str(),
+            "anthropic" | "openai" | "custom" | "mock"
+        ) {
+            metadata.insert("effective_provider".to_string(), provider);
+            metadata.insert("effective_model".to_string(), model.trim().to_string());
+            return;
+        }
+    }
+    metadata.insert("effective_model".to_string(), raw.to_string());
 }
 
 fn parse_due_from_filename(path: &Path) -> Option<i64> {
@@ -1342,6 +1905,7 @@ mod tests {
             from_agent: None,
             files: vec![],
             chain_depth: 5,
+            run_kind: RunKind::Message,
         };
 
         // Simulate what enqueue_message builds
@@ -1354,6 +1918,7 @@ mod tests {
             "message_id": msg.message_id,
             "agent": msg.pre_routed_agent,
             "chain_depth": msg.chain_depth,
+            "run_kind": msg.run_kind,
         });
 
         let envelope: IncomingQueueEnvelope = serde_json::from_value(payload).expect("roundtrip");

@@ -23,6 +23,18 @@ pub struct SessionSummary {
     pub agent_id: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub last_channel: Option<String>,
+    #[serde(default)]
+    pub last_peer_id: Option<String>,
+    #[serde(default)]
+    pub last_account_id: Option<String>,
+    #[serde(default)]
+    pub last_chat_type: Option<String>,
+    #[serde(default)]
+    pub last_heartbeat_text: Option<String>,
+    #[serde(default)]
+    pub last_heartbeat_sent_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +158,18 @@ struct SessionRecord {
     agent_id: String,
     created_at: String,
     updated_at: String,
+    #[serde(default)]
+    last_channel: Option<String>,
+    #[serde(default)]
+    last_peer_id: Option<String>,
+    #[serde(default)]
+    last_account_id: Option<String>,
+    #[serde(default)]
+    last_chat_type: Option<String>,
+    #[serde(default)]
+    last_heartbeat_text: Option<String>,
+    #[serde(default)]
+    last_heartbeat_sent_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -472,7 +496,115 @@ impl StateStore {
                 agent_id: agent_id.to_string(),
                 created_at: now.clone(),
                 updated_at: now,
+                last_channel: None,
+                last_peer_id: None,
+                last_account_id: None,
+                last_chat_type: None,
+                last_heartbeat_text: None,
+                last_heartbeat_sent_at: None,
             });
+        self.persist_locked(&snapshot)
+    }
+
+    pub fn get_session(&self, session_key: &str) -> Result<Option<SessionSummary>> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        Ok(snapshot
+            .sessions
+            .get(session_key)
+            .cloned()
+            .map(|session| SessionSummary {
+                session_key: session.session_key,
+                agent_id: session.agent_id,
+                created_at: session.created_at,
+                updated_at: session.updated_at,
+                last_channel: session.last_channel,
+                last_peer_id: session.last_peer_id,
+                last_account_id: session.last_account_id,
+                last_chat_type: session.last_chat_type,
+                last_heartbeat_text: session.last_heartbeat_text,
+                last_heartbeat_sent_at: session.last_heartbeat_sent_at,
+            }))
+    }
+
+    pub fn update_session_route(
+        &self,
+        session_key: &str,
+        agent_id: &str,
+        channel: &str,
+        peer_id: &str,
+        account_id: Option<&str>,
+        chat_type: &str,
+    ) -> Result<()> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        let now = now_rfc3339();
+        snapshot
+            .sessions
+            .entry(session_key.to_string())
+            .and_modify(|session| {
+                session.agent_id = agent_id.to_string();
+                session.updated_at = now.clone();
+                session.last_channel = Some(channel.to_string());
+                session.last_peer_id = Some(peer_id.to_string());
+                session.last_account_id = account_id.map(ToString::to_string);
+                session.last_chat_type = Some(chat_type.to_string());
+            })
+            .or_insert_with(|| SessionRecord {
+                session_key: session_key.to_string(),
+                agent_id: agent_id.to_string(),
+                created_at: now.clone(),
+                updated_at: now,
+                last_channel: Some(channel.to_string()),
+                last_peer_id: Some(peer_id.to_string()),
+                last_account_id: account_id.map(ToString::to_string),
+                last_chat_type: Some(chat_type.to_string()),
+                last_heartbeat_text: None,
+                last_heartbeat_sent_at: None,
+            });
+        self.persist_locked(&snapshot)
+    }
+
+    pub fn record_heartbeat_delivery(
+        &self,
+        session_key: &str,
+        agent_id: &str,
+        text: Option<&str>,
+        sent_at_ms: Option<i64>,
+    ) -> Result<()> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        let now = now_rfc3339();
+        snapshot
+            .sessions
+            .entry(session_key.to_string())
+            .and_modify(|session| {
+                session.agent_id = agent_id.to_string();
+                session.updated_at = now.clone();
+                session.last_heartbeat_text = text.map(ToString::to_string);
+                session.last_heartbeat_sent_at = sent_at_ms;
+            })
+            .or_insert_with(|| SessionRecord {
+                session_key: session_key.to_string(),
+                agent_id: agent_id.to_string(),
+                created_at: now.clone(),
+                updated_at: now,
+                last_channel: None,
+                last_peer_id: None,
+                last_account_id: None,
+                last_chat_type: None,
+                last_heartbeat_text: text.map(ToString::to_string),
+                last_heartbeat_sent_at: sent_at_ms,
+            });
+        self.persist_locked(&snapshot)
+    }
+
+    pub fn restore_session_updated_at(&self, session_key: &str, updated_at: &str) -> Result<()> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        if let Some(session) = snapshot.sessions.get_mut(session_key) {
+            session.updated_at = updated_at.to_string();
+        }
         self.persist_locked(&snapshot)
     }
 
@@ -497,6 +629,12 @@ impl StateStore {
                 agent_id: session.agent_id,
                 created_at: session.created_at,
                 updated_at: session.updated_at,
+                last_channel: session.last_channel,
+                last_peer_id: session.last_peer_id,
+                last_account_id: session.last_account_id,
+                last_chat_type: session.last_chat_type,
+                last_heartbeat_text: session.last_heartbeat_text,
+                last_heartbeat_sent_at: session.last_heartbeat_sent_at,
             })
             .collect())
     }

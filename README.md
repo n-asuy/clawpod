@@ -98,8 +98,14 @@ timeout_sec = 120
 
 [heartbeat]
 enabled = false
+every = "30m"
 interval_sec = 3600
 sender = "Heartbeat"
+target = "none"
+ack_max_chars = 300
+direct_policy = "allow"
+light_context = false
+isolated_session = false
 
 [queue]
 mode = "collect"
@@ -120,6 +126,12 @@ name = "Reviewer"
 provider = "openai"
 model = "gpt-5"
 
+[agents.default.heartbeat]
+every = "30m"
+target = "last"
+light_context = true
+isolated_session = true
+
 # Teams
 [teams.dev]
 name = "Development"
@@ -131,12 +143,19 @@ agents = ["default", "reviewer"]
 bot_token_env = "SLACK_BOT_TOKEN"
 app_token_env = "SLACK_APP_TOKEN"
 
+[channels.defaults.heartbeat]
+show_ok = false
+show_alerts = true
+use_indicator = true
+
 [channels.telegram]
 bot_token_env = "TELEGRAM_BOT_TOKEN"
 
 [channels.discord]
 bot_token_env = "DISCORD_BOT_TOKEN"
 ```
+
+Heartbeat reads `HEARTBEAT.md` from each agent workspace. A missing file still allows the default prompt to run, but an effectively empty file disables that agent's heartbeat. `target = "last"` reuses the last external route seen for the agent's main session, and channel visibility is controlled with `channels.defaults.heartbeat` or per-channel heartbeat settings.
 
 ### Environment Variables
 

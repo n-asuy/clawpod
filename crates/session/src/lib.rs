@@ -1,5 +1,9 @@
 use domain::{ChatType, DmScope, InboundEvent};
 
+pub fn build_agent_main_session_key(agent_id: &str, main_key: &str) -> String {
+    format!("agent:{agent_id}:{main_key}")
+}
+
 pub fn build_session_key(
     agent_id: &str,
     event: &InboundEvent,
@@ -28,7 +32,7 @@ fn build_direct_session_key(
         .unwrap_or_else(|| "default".to_string());
 
     match dm_scope {
-        DmScope::Main => format!("agent:{agent_id}:{main_key}"),
+        DmScope::Main => build_agent_main_session_key(agent_id, main_key),
         DmScope::PerPeer => format!("agent:{agent_id}:direct:{}", event.sender_id),
         DmScope::PerChannelPeer => {
             format!(
@@ -48,7 +52,7 @@ fn build_direct_session_key(
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use domain::{ChatType, InboundEvent};
+    use domain::{ChatType, InboundEvent, RunKind};
 
     use super::*;
 
@@ -67,6 +71,7 @@ mod tests {
             pre_routed_agent: None,
             from_agent: None,
             chain_depth: 0,
+            run_kind: RunKind::Message,
         }
     }
 

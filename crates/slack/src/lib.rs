@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use config::{evaluate_ingress_policy, IngressDecision, RuntimeConfig};
-use domain::ChatType;
+use domain::{ChatType, RunKind};
 use futures_util::{SinkExt, StreamExt};
 use observer::{mark_component_disabled, mark_component_error, mark_component_ok, FileEventSink};
 use queue::{
@@ -723,6 +723,7 @@ async fn handle_message_event(
             from_agent: None,
             files,
             chain_depth: 0,
+            run_kind: RunKind::Message,
         },
     )
     .await?;

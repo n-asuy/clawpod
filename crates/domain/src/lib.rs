@@ -179,6 +179,71 @@ pub enum ChatType {
     Thread,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HeartbeatDirectPolicy {
+    Allow,
+    Block,
+}
+
+impl Default for HeartbeatDirectPolicy {
+    fn default() -> Self {
+        Self::Allow
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HeartbeatActiveHours {
+    pub start: String,
+    pub end: String,
+    #[serde(default)]
+    pub timezone: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HeartbeatOverrideConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub every: Option<String>,
+    #[serde(default, alias = "intervalSec")]
+    pub interval_sec: Option<u64>,
+    #[serde(default)]
+    pub sender: Option<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default, alias = "accountId")]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default, alias = "ackMaxChars")]
+    pub ack_max_chars: Option<usize>,
+    #[serde(default, alias = "directPolicy")]
+    pub direct_policy: Option<HeartbeatDirectPolicy>,
+    #[serde(default, alias = "includeReasoning")]
+    pub include_reasoning: Option<bool>,
+    #[serde(default, alias = "lightContext")]
+    pub light_context: Option<bool>,
+    #[serde(default, alias = "isolatedSession")]
+    pub isolated_session: Option<bool>,
+    #[serde(default, alias = "activeHours")]
+    pub active_hours: Option<HeartbeatActiveHours>,
+    #[serde(default)]
+    pub session: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunKind {
+    #[default]
+    Message,
+    Heartbeat,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub name: String,
@@ -193,6 +258,8 @@ pub struct AgentConfig {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub prompt_file: Option<String>,
+    #[serde(default)]
+    pub heartbeat: Option<HeartbeatOverrideConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +302,8 @@ pub struct InboundEvent {
     pub from_agent: Option<String>,
     #[serde(default)]
     pub chain_depth: u32,
+    #[serde(default)]
+    pub run_kind: RunKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,6 +348,8 @@ pub struct RunRequest {
     pub prompt: String,
     pub continue_session: bool,
     pub metadata: HashMap<String, String>,
+    #[serde(default)]
+    pub run_kind: RunKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -404,8 +475,8 @@ mod tests {
 
     #[test]
     fn is_known_model_positive() {
-        assert!(is_known_model(ProviderKind::Anthropic, "claude-sonnet-4-5"));
-        assert!(is_known_model(ProviderKind::Openai, "o3"));
+        assert!(is_known_model(ProviderKind::Anthropic, "claude-sonnet-4-6"));
+        assert!(is_known_model(ProviderKind::Openai, "gpt-5.4"));
     }
 
     #[test]

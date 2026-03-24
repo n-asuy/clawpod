@@ -116,6 +116,8 @@ and briefly note blockers.
 -->
 "#;
 
+const HEARTBEAT_FILE_CANDIDATES: &[&str] = &["HEARTBEAT.md", "heartbeat.md"];
+
 pub fn ensure_agent_workspace(
     agent_id: &str,
     agent: &AgentConfig,
@@ -152,10 +154,11 @@ pub fn ensure_agent_workspace(
             .with_context(|| format!("failed to write SOUL.md: {}", soul_md.display()))?;
     }
 
-    let heartbeat = root.join("heartbeat.md");
-    if !heartbeat.exists() {
+    let heartbeat = root.join("HEARTBEAT.md");
+    let legacy_heartbeat = root.join("heartbeat.md");
+    if !heartbeat.exists() && !legacy_heartbeat.exists() {
         fs::write(&heartbeat, HEARTBEAT_TEMPLATE)
-            .with_context(|| format!("failed to write heartbeat.md: {}", heartbeat.display()))?;
+            .with_context(|| format!("failed to write HEARTBEAT.md: {}", heartbeat.display()))?;
     }
 
     Ok(())
@@ -167,15 +170,35 @@ pub fn ensure_session_workspace(agent_root: &Path, session_key: &str) -> Result<
         .with_context(|| format!("failed to create session dir: {}", session_dir.display()))?;
 
     link_or_copy(agent_root.join("AGENTS.md"), session_dir.join("AGENTS.md"))?;
-    link_or_copy(
-        agent_root.join("heartbeat.md"),
-        session_dir.join("heartbeat.md"),
-    )?;
+    link_heartbeat_file(agent_root, &session_dir)?;
     link_or_copy(agent_root.join(".clawpod"), session_dir.join(".clawpod"))?;
     link_or_copy(agent_root.join(".claude"), session_dir.join(".claude"))?;
     link_or_copy(agent_root.join(".codex"), session_dir.join(".codex"))?;
     link_or_copy(agent_root.join(".agents"), session_dir.join(".agents"))?;
     link_or_copy(agent_root.join("memory"), session_dir.join("memory"))?;
+
+    Ok(session_dir)
+}
+
+pub fn ensure_lightweight_session_workspace(
+    agent_root: &Path,
+    session_key: &str,
+) -> Result<PathBuf> {
+    let session_dir = agent_root.join("sessions").join(slugify(session_key));
+    fs::create_dir_all(&session_dir)
+        .with_context(|| format!("failed to create session dir: {}", session_dir.display()))?;
+    fs::create_dir_all(session_dir.join(".clawpod")).with_context(|| {
+        format!(
+            "failed to create lightweight .clawpod dir: {}",
+            session_dir.display()
+        )
+    })?;
+
+    link_heartbeat_file(agent_root, &session_dir)?;
+    link_or_copy(
+        agent_root.join(".clawpod").join("files"),
+        session_dir.join(".clawpod").join("files"),
+    )?;
 
     Ok(session_dir)
 }
@@ -272,6 +295,29 @@ fn link_or_copy(src: PathBuf, dst: PathBuf) -> Result<()> {
         }
         Ok(())
     }
+}
+
+fn link_heartbeat_file(agent_root: &Path, session_dir: &Path) -> Result<()> {
+    if let Some((src, name)) = heartbeat_source(agent_root) {
+        link_or_copy(src, session_dir.join(name))?;
+    }
+    Ok(())
+}
+
+fn heartbeat_source(agent_root: &Path) -> Option<(PathBuf, &'static str)> {
+    for name in HEARTBEAT_FILE_CANDIDATES {
+        let path = agent_root.join(name);
+        if path.exists() {
+            return Some((path, name));
+        }
+    }
+    None
+}
+
+pub fn resolve_heartbeat_file(agent_root: &Path) -> PathBuf {
+    heartbeat_source(agent_root)
+        .map(|(path, _)| path)
+        .unwrap_or_else(|| agent_root.join("HEARTBEAT.md"))
 }
 
 #[cfg(not(unix))]

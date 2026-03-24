@@ -284,6 +284,7 @@ mod tests {
                     system_prompt: None,
                     prompt_file: None,
                     think_level: None,
+                    heartbeat: None,
                 },
             ),
             (
@@ -296,6 +297,7 @@ mod tests {
                     system_prompt: None,
                     prompt_file: None,
                     think_level: None,
+                    heartbeat: None,
                 },
             ),
         ])
@@ -392,6 +394,7 @@ mod tests {
                 system_prompt: None,
                 prompt_file: None,
                 think_level: None,
+                heartbeat: None,
             },
         );
         let mut teams = sample_teams();
