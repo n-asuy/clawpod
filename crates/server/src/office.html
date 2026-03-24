@@ -1363,6 +1363,7 @@ tr:hover td { background: var(--bg-hover); }
   function indicatorBadge(type) {
     if (!type) return '<span class="badge badge-gray">-</span>';
     if (type === 'ok') return '<span class="badge badge-green">ok</span>';
+    if (type === 'sent') return '<span class="badge badge-blue">sent</span>';
     if (type === 'alert') return '<span class="badge badge-yellow">alert</span>';
     if (type === 'error') return '<span class="badge badge-red">error</span>';
     return `<span class="badge badge-gray">${escapeHtml(type)}</span>`;
@@ -1393,7 +1394,23 @@ tr:hover td { background: var(--bg-hover); }
       <div style="display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           ${hb.enabled ? '<span class="badge badge-green">enabled</span>' : '<span class="badge badge-gray">disabled</span>'}
-          <span class="text-dim">interval: ${escapeHtml(String(hb.interval_sec || '-'))}s</span>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px">
+            <input type="checkbox" id="heartbeat-enabled" ${hb.enabled ? 'checked' : ''}>
+            enabled
+          </label>
+          <label class="text-dim" for="heartbeat-interval-sec" style="margin:0">interval</label>
+          <input
+            class="form-input"
+            id="heartbeat-interval-sec"
+            type="number"
+            min="1"
+            step="1"
+            value="${escapeHtml(String(hb.interval_sec || 3600))}"
+            style="width:110px"
+          >
+          <span class="text-dim">sec</span>
+          <button class="btn btn-sm" onclick="saveHeartbeatSettings()">Save</button>
+          <span class="text-dim">restart runtime for full effect</span>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <label class="form-label" style="margin:0">Agent:</label>
@@ -1439,6 +1456,25 @@ tr:hover td { background: var(--bg-hover); }
       renderHeartbeat($('#page-container'));
     } catch (err) {
       alert('Heartbeat trigger failed: ' + (err.message || err));
+    }
+  };
+
+  window.saveHeartbeatSettings = async function() {
+    try {
+      const intervalSec = Number.parseInt($('#heartbeat-interval-sec').value, 10);
+      if (!Number.isInteger(intervalSec) || intervalSec < 1) {
+        throw new Error('Interval must be an integer >= 1');
+      }
+      const data = await GET('/api/settings');
+      const config = data.config || {};
+      config.heartbeat = config.heartbeat || {};
+      config.heartbeat.enabled = $('#heartbeat-enabled').checked;
+      config.heartbeat.interval_sec = intervalSec;
+      await PUT('/api/settings', config);
+      toast('Heartbeat settings saved (restart runtime for full effect)', 'success');
+      renderHeartbeat($('#page-container'));
+    } catch (err) {
+      toast(err.message, 'error');
     }
   };
 

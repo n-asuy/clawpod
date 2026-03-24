@@ -429,6 +429,7 @@ impl HeartbeatRunReason {
 #[serde(rename_all = "snake_case")]
 pub enum HeartbeatIndicatorType {
     Ok,
+    Sent,
     Alert,
     Error,
 }
@@ -437,6 +438,7 @@ impl std::fmt::Display for HeartbeatIndicatorType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Ok => write!(f, "ok"),
+            Self::Sent => write!(f, "sent"),
             Self::Alert => write!(f, "alert"),
             Self::Error => write!(f, "error"),
         }
@@ -657,6 +659,7 @@ mod tests {
     #[test]
     fn heartbeat_indicator_type_display() {
         assert_eq!(HeartbeatIndicatorType::Ok.to_string(), "ok");
+        assert_eq!(HeartbeatIndicatorType::Sent.to_string(), "sent");
         assert_eq!(HeartbeatIndicatorType::Alert.to_string(), "alert");
         assert_eq!(HeartbeatIndicatorType::Error.to_string(), "error");
     }

@@ -8,6 +8,7 @@ pub enum HeartbeatEventStatus {
     OkEmpty,
     OkToken,
     Sent,
+    DeliveryWarning,
     Failed,
     Skipped,
 }
@@ -18,7 +19,8 @@ pub fn resolve_indicator_type(status: HeartbeatEventStatus) -> Option<HeartbeatI
         HeartbeatEventStatus::OkEmpty | HeartbeatEventStatus::OkToken => {
             Some(HeartbeatIndicatorType::Ok)
         }
-        HeartbeatEventStatus::Sent => Some(HeartbeatIndicatorType::Alert),
+        HeartbeatEventStatus::Sent => Some(HeartbeatIndicatorType::Sent),
+        HeartbeatEventStatus::DeliveryWarning => Some(HeartbeatIndicatorType::Alert),
         HeartbeatEventStatus::Failed => Some(HeartbeatIndicatorType::Error),
         HeartbeatEventStatus::Skipped => None,
     }
@@ -28,10 +30,14 @@ pub fn resolve_indicator_type(status: HeartbeatEventStatus) -> Option<HeartbeatI
 pub fn derive_event_status(
     normalized: &NormalizeResult,
     delivered: bool,
+    has_delivery_issue: bool,
     failed: bool,
 ) -> HeartbeatEventStatus {
     if failed {
         return HeartbeatEventStatus::Failed;
+    }
+    if has_delivery_issue {
+        return HeartbeatEventStatus::DeliveryWarning;
     }
     match normalized {
         NormalizeResult::AckOnly => HeartbeatEventStatus::OkEmpty,
@@ -67,10 +73,10 @@ mod tests {
     }
 
     #[test]
-    fn sent_maps_to_alert() {
+    fn sent_maps_to_sent() {
         assert_eq!(
             resolve_indicator_type(HeartbeatEventStatus::Sent),
-            Some(HeartbeatIndicatorType::Alert)
+            Some(HeartbeatIndicatorType::Sent)
         );
     }
 
@@ -89,21 +95,28 @@ mod tests {
 
     #[test]
     fn derive_ack_only() {
-        let status = derive_event_status(&NormalizeResult::AckOnly, false, false);
+        let status = derive_event_status(&NormalizeResult::AckOnly, false, false, false);
         assert_eq!(status, HeartbeatEventStatus::OkEmpty);
     }
 
     #[test]
     fn derive_alert_delivered() {
         let status =
-            derive_event_status(&NormalizeResult::Alert("disk full".into()), true, false);
+            derive_event_status(&NormalizeResult::Alert("disk full".into()), true, false, false);
         assert_eq!(status, HeartbeatEventStatus::Sent);
     }
 
     #[test]
     fn derive_failed_overrides() {
         let status =
-            derive_event_status(&NormalizeResult::Alert("disk full".into()), false, true);
+            derive_event_status(&NormalizeResult::Alert("disk full".into()), false, false, true);
         assert_eq!(status, HeartbeatEventStatus::Failed);
+    }
+
+    #[test]
+    fn derive_no_target_as_delivery_warning() {
+        let status =
+            derive_event_status(&NormalizeResult::Alert("disk full".into()), false, true, false);
+        assert_eq!(status, HeartbeatEventStatus::DeliveryWarning);
     }
 }

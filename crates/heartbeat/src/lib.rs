@@ -262,7 +262,11 @@ impl HeartbeatService {
                 };
 
                 // Indicator
-                let event_status = derive_event_status(&normalized, delivered, false);
+                let has_delivery_issue =
+                    delivery_mode == HeartbeatDeliveryMode::NoTarget
+                        && matches!(normalized, NormalizeResult::Alert(_));
+                let event_status =
+                    derive_event_status(&normalized, delivered, has_delivery_issue, false);
                 let indicator = resolve_indicator_type(event_status);
                 let indicator_str = indicator.map(|i| i.to_string());
 
