@@ -12,6 +12,7 @@ use axum::{serve, Router};
 use chrono::Utc;
 use config::{ensure_runtime_dirs, write_config, RuntimeConfig};
 use domain::{AgentConfig, TeamConfig};
+use heartbeat::HeartbeatService;
 use observer::{mark_component_error, mark_component_ok, snapshot_json, FileEventSink};
 use queue::{enqueue_chatroom_message, enqueue_outgoing_message, list_outgoing_messages};
 use serde::Deserialize;
@@ -35,6 +36,7 @@ struct AppState {
     config_path: PathBuf,
     store: StateStore,
     sink: FileEventSink,
+    heartbeat_service: Option<Arc<HeartbeatService>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +130,9 @@ const EDITABLE_FILES: &[(&str, &str)] = &[
     (".clawpod", "SOUL.md"),
     ("", "AGENTS.md"),
     ("", "heartbeat.md"),
+    ("", "focus.md"),
+    ("memory", "reflections.md"),
+    ("memory", "curiosity_journal.md"),
 ];
 
 pub async fn run(
@@ -135,6 +140,7 @@ pub async fn run(
     config_path: PathBuf,
     store: StateStore,
     sink: FileEventSink,
+    heartbeat_service: Option<Arc<HeartbeatService>>,
 ) -> Result<()> {
     let bind_addr = config.server_listen_addr();
     let office_url = config.office_url();
@@ -143,6 +149,7 @@ pub async fn run(
         config_path,
         store,
         sink,
+        heartbeat_service,
     };
 
     let app = Router::new()
@@ -195,6 +202,7 @@ pub async fn run(
             get(get_chatroom).post(post_chatroom),
         )
         .route("/api/heartbeat/runs", get(list_heartbeat_runs))
+        .route("/api/heartbeat/run", post(trigger_heartbeat_run))
         .route("/api/models", get(list_models))
         .route("/api/doctor", get(api_doctor))
         .route("/api/events/stream", get(stream_events))
@@ -758,6 +766,33 @@ async fn list_heartbeat_runs(
         },
         "runs": runs,
     })))
+}
+
+#[derive(Debug, Deserialize)]
+struct TriggerHeartbeatBody {
+    agent_id: String,
+}
+
+async fn trigger_heartbeat_run(
+    State(state): State<AppState>,
+    Json(body): Json<TriggerHeartbeatBody>,
+) -> ApiResult<Json<Value>> {
+    let service = state
+        .heartbeat_service
+        .as_ref()
+        .ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "heartbeat service not available".to_string(),
+            )
+        })?;
+
+    let view = service
+        .run_once(&body.agent_id, domain::HeartbeatRunReason::Manual)
+        .await
+        .map_err(internal_error)?;
+
+    Ok(Json(serde_json::to_value(view).map_err(|e| internal_error(e.into()))?))
 }
 
 async fn stream_events(

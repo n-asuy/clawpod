@@ -311,10 +311,28 @@ impl QueueProcessor {
 
         let mut route =
             parse_agent_routing(&incoming_hook.text, &self.config.agents, &self.config.teams);
+        let was_explicit_mention = route.agent_id != "default";
+
         if route.agent_id == "default" {
             route.agent_id = resolve_binding(&event, &self.config.bindings, &default_agent);
-            route.is_team_routed = false;
-            route.team_id = None;
+        }
+
+        // Sticky routing: if no explicit @mention and no binding match,
+        // check if this sender has a routing affinity from a previous conversation.
+        // Only applies to DM messages from external channels.
+        if !was_explicit_mention
+            && route.agent_id == default_agent
+            && event.chat_type == domain::ChatType::Direct
+            && !is_internal_channel(&event.channel)
+        {
+            if let Ok(Some(affinity_agent)) = self
+                .store
+                .get_routing_affinity(&event.channel, &event.sender_id)
+            {
+                if self.config.agents.contains_key(&affinity_agent) {
+                    route.agent_id = affinity_agent;
+                }
+            }
         }
 
         if let Some(forced) = &event.pre_routed_agent {
@@ -334,6 +352,20 @@ impl QueueProcessor {
             );
             default_agent.clone()
         };
+
+        // Update routing affinity for explicit @mentions on external DM channels.
+        // This ensures that the next message without @mention goes to the same agent.
+        if was_explicit_mention
+            && event.chat_type == domain::ChatType::Direct
+            && !is_internal_channel(&event.channel)
+        {
+            if let Err(err) = self
+                .store
+                .set_routing_affinity(&event.channel, &event.sender_id, &agent_id)
+            {
+                warn!(error = %err, "failed to set routing affinity");
+            }
+        }
 
         let team_id = if event.channel == "chatroom" {
             Some(event.peer_id.clone())
@@ -667,9 +699,19 @@ impl QueueProcessor {
         let finished_at = Utc::now();
         let run = self.store.record_heartbeat_run(
             agent_id,
+            "scheduled",
+            None,
             prompt,
             output,
+            None,
             status,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             &started_at.to_rfc3339(),
             &finished_at.to_rfc3339(),
             duration_ms,
@@ -1006,6 +1048,9 @@ impl QueueProcessor {
             agents: &self.config.agents,
             teams: &self.config.teams,
             user_system_prompt: user_prompt.as_deref(),
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
         let full = SystemPromptBuilder::with_defaults().build(&ctx)?;
 
@@ -1199,6 +1244,11 @@ fn parse_due_from_filename(path: &Path) -> Option<i64> {
     let file_name = path.file_name()?.to_str()?;
     let (prefix, _) = file_name.split_once('_')?;
     prefix.parse::<i64>().ok()
+}
+
+/// Channels that are internal to ClawPod and should not affect routing affinity.
+fn is_internal_channel(channel: &str) -> bool {
+    matches!(channel, "heartbeat" | "chatroom" | "internal")
 }
 
 fn queued_file_name(available_at_ms: i64) -> String {

@@ -12,6 +12,7 @@ use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 use config::{default_config_path, ensure_runtime_dirs, load_config, RuntimeConfig};
 use domain::ChatType;
+use ::heartbeat::HeartbeatService;
 use observer::{
     bump_component_restart, log_startup_banner, mark_component_disabled, mark_component_error,
     mark_component_ok, FileEventSink,
@@ -123,6 +124,12 @@ enum Commands {
         #[command(subcommand)]
         command: AuthCommand,
     },
+
+    /// Manage heartbeat automation
+    Heartbeat {
+        #[command(subcommand)]
+        command: HeartbeatCommand,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -142,6 +149,26 @@ pub enum AuthCommand {
     Openai,
     /// Show authentication status for all providers
     Status,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum HeartbeatCommand {
+    /// Show the last heartbeat run for each agent
+    Last {
+        /// Filter by agent id
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Trigger a heartbeat run for an agent
+    Run {
+        /// Agent id to run heartbeat for
+        #[arg(long)]
+        agent: String,
+    },
+    /// Enable heartbeat in config
+    Enable,
+    /// Disable heartbeat in config
+    Disable,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -239,11 +266,14 @@ async fn main() -> Result<()> {
             log_startup_banner(&config.home_dir());
             let sink = FileEventSink::new(config.event_log_path())?;
             let store = StateStore::new(config.state_path())?;
-            server::run(config, config_path, store, sink).await?;
+            server::run(config, config_path, store, sink, None).await?;
         }
         Commands::Reset { agent } => reset(&config, &agent)?,
         Commands::Pairing { command } => pairing_cmd(&config, &command)?,
         Commands::Auth { command } => auth_cmd(&command).await?,
+        Commands::Heartbeat { command } => {
+            heartbeat_cmd(&config, &config_path, &command).await?
+        }
     }
 
     Ok(())
@@ -256,7 +286,8 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
     let sink = FileEventSink::new(config.event_log_path())?;
     let store = StateStore::new(config.state_path())?;
     let runner = Arc::new(CliRunner::new(config.runner.timeout_sec));
-    let processor = QueueProcessor::new(config.clone(), runner, store.clone(), sink.clone());
+    let config_arc = Arc::new(config.clone());
+    let processor = QueueProcessor::new(config.clone(), runner.clone(), store.clone(), sink.clone());
     let mut tasks = JoinSet::new();
 
     spawn_component(
@@ -265,12 +296,21 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
         async move { processor.run_forever().await },
     );
 
+    // Create HeartbeatService (shared between heartbeat loop and server)
+    let heartbeat_service = Arc::new(HeartbeatService::new(
+        config_arc.clone(),
+        runner.clone(),
+        store.clone(),
+        sink.clone(),
+    ));
+
     if config.heartbeat.enabled {
-        let heartbeat_config = config.clone();
-        let heartbeat_store = store.clone();
-        let heartbeat_sink = sink.clone();
+        let hb_service = heartbeat_service.clone();
+        let hb_config = config_arc.clone();
+        let hb_store = store.clone();
+        let hb_sink = sink.clone();
         spawn_component(&mut tasks, "heartbeat", async move {
-            heartbeat::run_loop(heartbeat_config, heartbeat_store, heartbeat_sink).await
+            heartbeat::run_loop(hb_service, hb_config, hb_store, hb_sink).await
         });
     } else {
         mark_component_disabled("heartbeat", "heartbeat disabled");
@@ -281,8 +321,10 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
         let server_path = config_path.clone();
         let server_store = StateStore::new(server_config.state_path())?;
         let server_sink = FileEventSink::new(server_config.event_log_path())?;
+        let server_hb = heartbeat_service.clone();
         spawn_component(&mut tasks, "office", async move {
-            server::run(server_config, server_path, server_store, server_sink).await
+            server::run(server_config, server_path, server_store, server_sink, Some(server_hb))
+                .await
         });
     } else {
         mark_component_disabled("office", "server disabled");
@@ -497,6 +539,88 @@ async fn auth_cmd(command: &AuthCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+async fn heartbeat_cmd(
+    config: &RuntimeConfig,
+    config_path: &Path,
+    command: &HeartbeatCommand,
+) -> Result<()> {
+    match command {
+        HeartbeatCommand::Last { agent } => {
+            let store = StateStore::new(config.state_path())?;
+            let runs = store.list_heartbeat_runs(
+                if agent.is_some() { 1 } else { config.agents.len() },
+                agent.as_deref(),
+            )?;
+            if runs.is_empty() {
+                println!("no heartbeat runs recorded");
+                return Ok(());
+            }
+            for run in &runs {
+                let indicator = run
+                    .indicator_type
+                    .as_deref()
+                    .unwrap_or("-");
+                let preview = run
+                    .preview
+                    .as_deref()
+                    .unwrap_or("-");
+                let skip = run
+                    .skip_reason
+                    .as_deref()
+                    .unwrap_or("");
+                println!(
+                    "  {} agent={} status={} reason={} indicator={} {}{}",
+                    run.finished_at,
+                    run.agent_id,
+                    run.status,
+                    run.reason,
+                    indicator,
+                    if skip.is_empty() {
+                        String::new()
+                    } else {
+                        format!("skip={skip} ")
+                    },
+                    preview,
+                );
+            }
+        }
+        HeartbeatCommand::Run { agent } => {
+            if !config.agents.contains_key(agent) {
+                bail!("agent not found: {agent}");
+            }
+            let sink = FileEventSink::new(config.event_log_path())?;
+            let store = StateStore::new(config.state_path())?;
+            let runner = Arc::new(runner::CliRunner::new(config.runner.timeout_sec));
+            let config_arc = Arc::new(config.clone());
+            let service = HeartbeatService::new(config_arc, runner, store, sink);
+            let view = service
+                .run_once(agent, domain::HeartbeatRunReason::Manual)
+                .await?;
+            println!(
+                "agent={} status={} reason={} indicator={} preview={}",
+                view.agent_id,
+                view.status,
+                view.reason,
+                view.indicator_type.as_deref().unwrap_or("-"),
+                view.preview.as_deref().unwrap_or("-"),
+            );
+        }
+        HeartbeatCommand::Enable => {
+            let mut updated = config.clone();
+            updated.heartbeat.enabled = true;
+            config::write_config(config_path, &updated)?;
+            println!("heartbeat enabled");
+        }
+        HeartbeatCommand::Disable => {
+            let mut updated = config.clone();
+            updated.heartbeat.enabled = false;
+            config::write_config(config_path, &updated)?;
+            println!("heartbeat disabled");
+        }
+    }
+    Ok(())
 }
 
 async fn auth_openai() -> Result<()> {

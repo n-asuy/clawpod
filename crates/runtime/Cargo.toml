@@ -17,6 +17,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 config = { path = "../config" }
 discord = { path = "../discord" }
 domain = { path = "../domain" }
+heartbeat = { path = "../heartbeat" }
 observer = { path = "../observer" }
 pairing = { path = "../pairing" }
 plugins = { path = "../plugins" }

@@ -26,6 +26,9 @@ pub struct PromptContext<'a> {
     pub agents: &'a HashMap<String, AgentConfig>,
     pub teams: &'a HashMap<String, TeamConfig>,
     pub user_system_prompt: Option<&'a str>,
+    pub is_heartbeat: bool,
+    pub heartbeat_ack_max_chars: Option<usize>,
+    pub light_context: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -53,9 +56,19 @@ impl SystemPromptBuilder {
                 Box::new(InstructionsSection),
                 Box::new(TeammatesSection),
                 Box::new(MemorySection),
+                Box::new(FocusSection),
                 Box::new(IdentitySection),
+                Box::new(HeartbeatSection),
                 Box::new(UserPromptSection),
             ],
+        }
+    }
+
+    /// Minimal builder for heartbeat runs with `light_context = true`.
+    /// Only includes the heartbeat section (no instructions, teammates, identity, etc.).
+    pub fn with_heartbeat_defaults() -> Self {
+        Self {
+            sections: vec![Box::new(HeartbeatSection)],
         }
     }
 
@@ -85,7 +98,9 @@ impl SystemPromptBuilder {
 pub struct InstructionsSection;
 pub struct TeammatesSection;
 pub struct IdentitySection;
+pub struct FocusSection;
 pub struct UserPromptSection;
+pub struct HeartbeatSection;
 
 impl PromptSection for InstructionsSection {
     fn name(&self) -> &str {
@@ -169,6 +184,52 @@ impl PromptSection for IdentitySection {
     }
 }
 
+/// Maximum characters for focus.md injection (matches Clawith's 3000 char budget).
+const FOCUS_MAX_CHARS: usize = 3_000;
+
+impl PromptSection for FocusSection {
+    fn name(&self) -> &str {
+        "focus"
+    }
+
+    fn build(&self, ctx: &PromptContext<'_>) -> Result<String> {
+        let path = ctx.workspace_dir.join("focus.md");
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Ok(String::new()),
+        };
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return Ok(String::new());
+        }
+
+        // Strip heading if present
+        let body = if let Some(rest) = trimmed.strip_prefix("# Focus") {
+            rest.trim()
+        } else {
+            trimmed
+        };
+
+        // Skip if only comments/empty after heading
+        let has_content = body.lines().any(|line| {
+            let l = line.trim();
+            !l.is_empty() && !l.starts_with("<!--") && !l.starts_with("-->")
+        });
+        if !has_content {
+            return Ok(String::new());
+        }
+
+        let truncated = if body.chars().count() > FOCUS_MAX_CHARS {
+            let s: String = body.chars().take(FOCUS_MAX_CHARS).collect();
+            format!("{s}\n\n[... truncated at {FOCUS_MAX_CHARS} chars]")
+        } else {
+            body.to_string()
+        };
+
+        Ok(format!("## Focus\n\n{truncated}"))
+    }
+}
+
 impl PromptSection for UserPromptSection {
     fn name(&self) -> &str {
         "user_prompt"
@@ -179,6 +240,29 @@ impl PromptSection for UserPromptSection {
             Some(s) if !s.trim().is_empty() => Ok(s.trim().to_string()),
             _ => Ok(String::new()),
         }
+    }
+}
+
+impl PromptSection for HeartbeatSection {
+    fn name(&self) -> &str {
+        "heartbeat"
+    }
+
+    fn build(&self, ctx: &PromptContext<'_>) -> Result<String> {
+        if !ctx.is_heartbeat {
+            return Ok(String::new());
+        }
+        let ack_chars = ctx.heartbeat_ack_max_chars.unwrap_or(300);
+        Ok(format!(
+            r#"## Heartbeat Run
+
+This is an automated heartbeat run, not a user conversation.
+
+- If nothing needs attention, reply with exactly `HEARTBEAT_OK`.
+- If you have alerts or status updates, write them normally — do NOT include `HEARTBEAT_OK` anywhere in an alert response.
+- Responses containing only `HEARTBEAT_OK` (or `HEARTBEAT_OK` with up to {ack_chars} chars of filler) will be treated as acknowledgements and may be suppressed from external delivery.
+- Do not infer tasks from prior conversation history."#
+        ))
     }
 }
 
@@ -356,6 +440,7 @@ mod tests {
             provider_id: None,
             system_prompt: None,
             prompt_file: None,
+            heartbeat: None,
         }
     }
 
@@ -446,6 +531,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
         let output = IdentitySection.build(&ctx).unwrap();
 
@@ -468,6 +556,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
         let output = IdentitySection.build(&ctx).unwrap();
         assert!(output.trim().is_empty());
@@ -484,6 +575,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
         let output = IdentitySection.build(&ctx).unwrap();
 
@@ -514,6 +608,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
         let output = TeammatesSection.build(&ctx).unwrap();
 
@@ -534,6 +631,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
         let output = TeammatesSection.build(&ctx).unwrap();
         assert!(output.trim().is_empty());
@@ -552,6 +652,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: Some("Custom instructions here"),
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
         let output = UserPromptSection.build(&ctx).unwrap();
         assert_eq!(output, "Custom instructions here");
@@ -568,6 +671,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
         let output = UserPromptSection.build(&ctx).unwrap();
         assert!(output.is_empty());
@@ -589,6 +695,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: Some("User custom prompt"),
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
 
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
@@ -611,6 +720,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: Some("User custom prompt"),
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
 
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
@@ -641,6 +753,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
 
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
@@ -672,6 +787,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
 
         let prompt = SystemPromptBuilder::with_defaults()
@@ -753,6 +871,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
 
@@ -788,6 +909,9 @@ mod tests {
             agents: &agents,
             teams: &teams,
             user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         };
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
 
@@ -795,5 +919,225 @@ mod tests {
             prompt.contains("Mad scientist persona"),
             "session workspace should inherit SOUL.md via symlink"
         );
+    }
+
+    // -- FocusSection --
+
+    #[test]
+    fn focus_section_empty_when_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let ctx = PromptContext {
+            workspace_dir: dir.path(),
+            agent_id: "test",
+            agents: &agents,
+            teams: &teams,
+            user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
+        };
+        let output = FocusSection.build(&ctx).unwrap();
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn focus_section_empty_when_only_template() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("focus.md"),
+            "# Focus\n\n<!-- template comments -->\n",
+        )
+        .unwrap();
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let ctx = PromptContext {
+            workspace_dir: dir.path(),
+            agent_id: "test",
+            agents: &agents,
+            teams: &teams,
+            user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
+        };
+        let output = FocusSection.build(&ctx).unwrap();
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn focus_section_renders_content() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("focus.md"),
+            "# Focus\n\n- [/] Implement heartbeat parity\n- [ ] Deploy to production\n",
+        )
+        .unwrap();
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let ctx = PromptContext {
+            workspace_dir: dir.path(),
+            agent_id: "test",
+            agents: &agents,
+            teams: &teams,
+            user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
+        };
+        let output = FocusSection.build(&ctx).unwrap();
+        assert!(output.contains("## Focus"));
+        assert!(output.contains("[/] Implement heartbeat parity"));
+        assert!(output.contains("[ ] Deploy to production"));
+    }
+
+    #[test]
+    fn focus_section_truncates_large_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = format!("# Focus\n\n{}", "- [ ] task\n".repeat(500));
+        fs::write(dir.path().join("focus.md"), &content).unwrap();
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let ctx = PromptContext {
+            workspace_dir: dir.path(),
+            agent_id: "test",
+            agents: &agents,
+            teams: &teams,
+            user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
+        };
+        let output = FocusSection.build(&ctx).unwrap();
+        assert!(output.contains("[... truncated at 3000 chars]"));
+    }
+
+    #[test]
+    fn agent_bootstrap_creates_focus_and_reflections() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut agents = HashMap::new();
+        agents.insert("bot".to_string(), make_agent("Bot", "sonnet"));
+        let teams = HashMap::new();
+
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+
+        assert!(root.join("focus.md").exists());
+        assert!(root.join("memory").join("reflections.md").exists());
+        assert!(root.join("memory").join("curiosity_journal.md").exists());
+
+        let focus = fs::read_to_string(root.join("focus.md")).unwrap();
+        assert!(focus.contains("# Focus"));
+
+        let reflections =
+            fs::read_to_string(root.join("memory").join("reflections.md")).unwrap();
+        assert!(reflections.contains("# Reflections"));
+        assert!(reflections.contains("## Open Questions"));
+        assert!(reflections.contains("## Next Cycle Seeds"));
+    }
+
+    // -- HeartbeatSection --
+
+    #[test]
+    fn heartbeat_section_empty_when_not_heartbeat() {
+        let ws = tempfile::tempdir().unwrap();
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let ctx = PromptContext {
+            workspace_dir: ws.path(),
+            agent_id: "test",
+            agents: &agents,
+            teams: &teams,
+            user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
+        };
+        let output = HeartbeatSection.build(&ctx).unwrap();
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn heartbeat_section_renders_instructions() {
+        let ws = tempfile::tempdir().unwrap();
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let ctx = PromptContext {
+            workspace_dir: ws.path(),
+            agent_id: "test",
+            agents: &agents,
+            teams: &teams,
+            user_system_prompt: None,
+            is_heartbeat: true,
+            heartbeat_ack_max_chars: Some(500),
+            light_context: false,
+        };
+        let output = HeartbeatSection.build(&ctx).unwrap();
+        assert!(output.contains("## Heartbeat Run"));
+        assert!(output.contains("HEARTBEAT_OK"));
+        assert!(output.contains("500"));
+    }
+
+    #[test]
+    fn heartbeat_section_defaults_ack_chars() {
+        let ws = tempfile::tempdir().unwrap();
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let ctx = PromptContext {
+            workspace_dir: ws.path(),
+            agent_id: "test",
+            agents: &agents,
+            teams: &teams,
+            user_system_prompt: None,
+            is_heartbeat: true,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
+        };
+        let output = HeartbeatSection.build(&ctx).unwrap();
+        assert!(output.contains("300"));
+    }
+
+    #[test]
+    fn heartbeat_builder_only_includes_heartbeat_section() {
+        let ws = tempfile::tempdir().unwrap();
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let ctx = PromptContext {
+            workspace_dir: ws.path(),
+            agent_id: "test",
+            agents: &agents,
+            teams: &teams,
+            user_system_prompt: Some("Custom prompt"),
+            is_heartbeat: true,
+            heartbeat_ack_max_chars: None,
+            light_context: true,
+        };
+        let prompt = SystemPromptBuilder::with_heartbeat_defaults()
+            .build(&ctx)
+            .unwrap();
+        assert!(prompt.contains("## Heartbeat Run"));
+        assert!(!prompt.contains("ClawPod"));
+        assert!(!prompt.contains("Custom prompt"));
+    }
+
+    #[test]
+    fn default_builder_includes_heartbeat_when_active() {
+        let ws = tempfile::tempdir().unwrap();
+        let agents = HashMap::new();
+        let teams = HashMap::new();
+        let ctx = PromptContext {
+            workspace_dir: ws.path(),
+            agent_id: "test",
+            agents: &agents,
+            teams: &teams,
+            user_system_prompt: None,
+            is_heartbeat: true,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
+        };
+        let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
+        assert!(prompt.contains("ClawPod"));
+        assert!(prompt.contains("## Heartbeat Run"));
     }
 }

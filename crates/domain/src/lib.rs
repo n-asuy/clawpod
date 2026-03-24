@@ -179,6 +179,52 @@ pub enum ChatType {
     Thread,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ActiveHoursConfig {
+    pub start: String,
+    pub end: String,
+    #[serde(default)]
+    pub timezone: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentHeartbeatConfig {
+    #[serde(default)]
+    pub every: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub target: Option<HeartbeatTarget>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub ack_max_chars: Option<usize>,
+    #[serde(default)]
+    pub direct_policy: Option<HeartbeatDirectPolicy>,
+    #[serde(default)]
+    pub include_reasoning: Option<bool>,
+    #[serde(default)]
+    pub light_context: Option<bool>,
+    #[serde(default)]
+    pub isolated_session: Option<bool>,
+    #[serde(default)]
+    pub active_hours: Option<ActiveHoursConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelHeartbeatConfig {
+    #[serde(default)]
+    pub show_ok: Option<bool>,
+    #[serde(default)]
+    pub show_alerts: Option<bool>,
+    #[serde(default)]
+    pub use_indicator: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub name: String,
@@ -193,6 +239,8 @@ pub struct AgentConfig {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub prompt_file: Option<String>,
+    #[serde(default)]
+    pub heartbeat: Option<AgentHeartbeatConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,13 +365,146 @@ pub struct ChatroomPost {
     pub message: String,
 }
 
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum HeartbeatTarget {
+    #[default]
+    None,
+    Last,
+    Telegram,
+    Discord,
+    Slack,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum HeartbeatDirectPolicy {
+    #[default]
+    Allow,
+    Block,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HeartbeatRunReason {
+    Scheduled,
+    Manual,
+    Retry,
+    ExecEvent,
+    Wake,
+    Cron,
+    Hook,
+    Other,
+}
+
+impl std::fmt::Display for HeartbeatRunReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Scheduled => write!(f, "scheduled"),
+            Self::Manual => write!(f, "manual"),
+            Self::Retry => write!(f, "retry"),
+            Self::ExecEvent => write!(f, "exec_event"),
+            Self::Wake => write!(f, "wake"),
+            Self::Cron => write!(f, "cron"),
+            Self::Hook => write!(f, "hook"),
+            Self::Other => write!(f, "other"),
+        }
+    }
+}
+
+impl HeartbeatRunReason {
+    /// Returns true for event-driven reasons that bypass file gates.
+    pub fn is_event_driven(self) -> bool {
+        matches!(self, Self::ExecEvent | Self::Cron | Self::Wake | Self::Hook)
+    }
+
+    /// Returns true for action-level wake reasons (higher priority).
+    pub fn is_action_wake(self) -> bool {
+        matches!(self, Self::Manual | Self::ExecEvent | Self::Hook)
+    }
+}
+
+/// Indicator type emitted with heartbeat events for UI display.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HeartbeatIndicatorType {
+    Ok,
+    Alert,
+    Error,
+}
+
+impl std::fmt::Display for HeartbeatIndicatorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ok => write!(f, "ok"),
+            Self::Alert => write!(f, "alert"),
+            Self::Error => write!(f, "error"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HeartbeatRunStatus {
+    Ran,
+    Skipped,
+    Failed,
+}
+
+impl std::fmt::Display for HeartbeatRunStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ran => write!(f, "ran"),
+            Self::Skipped => write!(f, "skipped"),
+            Self::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HeartbeatDeliveryMode {
+    Delivered,
+    Suppressed,
+    NoTarget,
+}
+
+impl std::fmt::Display for HeartbeatDeliveryMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Delivered => write!(f, "delivered"),
+            Self::Suppressed => write!(f, "suppressed"),
+            Self::NoTarget => write!(f, "no_target"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatRunView {
     pub id: i64,
     pub agent_id: String,
+    pub reason: String,
+    #[serde(default)]
+    pub session_key: Option<String>,
     pub prompt: String,
     pub output: Option<String>,
+    #[serde(default)]
+    pub preview: Option<String>,
     pub status: String,
+    #[serde(default)]
+    pub skip_reason: Option<String>,
+    #[serde(default)]
+    pub delivery_channel: Option<String>,
+    #[serde(default)]
+    pub delivery_recipient: Option<String>,
+    #[serde(default)]
+    pub delivery_mode: Option<String>,
+    #[serde(default)]
+    pub used_model: Option<String>,
+    #[serde(default)]
+    pub used_prompt: Option<String>,
+    #[serde(default)]
+    pub indicator_type: Option<String>,
     pub started_at: String,
     pub finished_at: String,
     pub duration_ms: i64,
@@ -404,14 +585,14 @@ mod tests {
 
     #[test]
     fn is_known_model_positive() {
-        assert!(is_known_model(ProviderKind::Anthropic, "claude-sonnet-4-5"));
-        assert!(is_known_model(ProviderKind::Openai, "o3"));
+        assert!(is_known_model(ProviderKind::Anthropic, "claude-sonnet-4-6"));
+        assert!(is_known_model(ProviderKind::Openai, "gpt-5.4"));
     }
 
     #[test]
     fn is_known_model_negative() {
         assert!(!is_known_model(ProviderKind::Anthropic, "nonexistent"));
-        assert!(!is_known_model(ProviderKind::Openai, "claude-sonnet-4-5"));
+        assert!(!is_known_model(ProviderKind::Openai, "claude-sonnet-4-6"));
     }
 
     #[test]
@@ -420,5 +601,117 @@ mod tests {
             assert!(!m.id.is_empty(), "model id must not be empty");
             assert!(!m.name.is_empty(), "model name must not be empty");
         }
+    }
+
+    #[test]
+    fn heartbeat_target_serde_roundtrip() {
+        for (variant, json_str) in [
+            (HeartbeatTarget::None, "\"none\""),
+            (HeartbeatTarget::Last, "\"last\""),
+            (HeartbeatTarget::Telegram, "\"telegram\""),
+            (HeartbeatTarget::Discord, "\"discord\""),
+            (HeartbeatTarget::Slack, "\"slack\""),
+        ] {
+            let serialized = serde_json::to_string(&variant).unwrap();
+            assert_eq!(serialized, json_str);
+            let deserialized: HeartbeatTarget = serde_json::from_str(json_str).unwrap();
+            assert_eq!(deserialized, variant);
+        }
+    }
+
+    #[test]
+    fn heartbeat_target_default_is_none() {
+        assert_eq!(HeartbeatTarget::default(), HeartbeatTarget::None);
+    }
+
+    #[test]
+    fn heartbeat_direct_policy_serde_roundtrip() {
+        let allow: HeartbeatDirectPolicy = serde_json::from_str("\"allow\"").unwrap();
+        assert_eq!(allow, HeartbeatDirectPolicy::Allow);
+        let block: HeartbeatDirectPolicy = serde_json::from_str("\"block\"").unwrap();
+        assert_eq!(block, HeartbeatDirectPolicy::Block);
+    }
+
+    #[test]
+    fn heartbeat_run_reason_display() {
+        assert_eq!(HeartbeatRunReason::Scheduled.to_string(), "scheduled");
+        assert_eq!(HeartbeatRunReason::Manual.to_string(), "manual");
+        assert_eq!(HeartbeatRunReason::ExecEvent.to_string(), "exec_event");
+        assert_eq!(HeartbeatRunReason::Cron.to_string(), "cron");
+        assert_eq!(HeartbeatRunReason::Hook.to_string(), "hook");
+        assert_eq!(HeartbeatRunReason::Wake.to_string(), "wake");
+        assert_eq!(HeartbeatRunReason::Retry.to_string(), "retry");
+        assert_eq!(HeartbeatRunReason::Other.to_string(), "other");
+    }
+
+    #[test]
+    fn heartbeat_run_reason_event_driven() {
+        assert!(!HeartbeatRunReason::Scheduled.is_event_driven());
+        assert!(!HeartbeatRunReason::Manual.is_event_driven());
+        assert!(HeartbeatRunReason::ExecEvent.is_event_driven());
+        assert!(HeartbeatRunReason::Cron.is_event_driven());
+        assert!(HeartbeatRunReason::Wake.is_event_driven());
+        assert!(HeartbeatRunReason::Hook.is_event_driven());
+    }
+
+    #[test]
+    fn heartbeat_indicator_type_display() {
+        assert_eq!(HeartbeatIndicatorType::Ok.to_string(), "ok");
+        assert_eq!(HeartbeatIndicatorType::Alert.to_string(), "alert");
+        assert_eq!(HeartbeatIndicatorType::Error.to_string(), "error");
+    }
+
+    #[test]
+    fn heartbeat_run_status_display() {
+        assert_eq!(HeartbeatRunStatus::Ran.to_string(), "ran");
+        assert_eq!(HeartbeatRunStatus::Skipped.to_string(), "skipped");
+        assert_eq!(HeartbeatRunStatus::Failed.to_string(), "failed");
+    }
+
+    #[test]
+    fn heartbeat_delivery_mode_display() {
+        assert_eq!(HeartbeatDeliveryMode::Delivered.to_string(), "delivered");
+        assert_eq!(HeartbeatDeliveryMode::Suppressed.to_string(), "suppressed");
+        assert_eq!(HeartbeatDeliveryMode::NoTarget.to_string(), "no_target");
+    }
+
+    #[test]
+    fn heartbeat_run_view_deserializes_with_new_fields() {
+        let json = r#"{
+            "id": 1,
+            "agent_id": "default",
+            "reason": "scheduled",
+            "prompt": "check",
+            "output": "HEARTBEAT_OK",
+            "status": "ran",
+            "started_at": "2026-01-01T00:00:00Z",
+            "finished_at": "2026-01-01T00:01:00Z",
+            "duration_ms": 60000
+        }"#;
+        let view: HeartbeatRunView = serde_json::from_str(json).unwrap();
+        assert_eq!(view.reason, "scheduled");
+        assert!(view.session_key.is_none());
+        assert!(view.preview.is_none());
+        assert!(view.skip_reason.is_none());
+        assert!(view.delivery_channel.is_none());
+    }
+
+    #[test]
+    fn heartbeat_run_view_backward_compat_old_format() {
+        // Old format without new fields should still deserialize
+        let json = r#"{
+            "id": 1,
+            "agent_id": "default",
+            "reason": "scheduled",
+            "prompt": "check",
+            "output": null,
+            "status": "ok",
+            "started_at": "2026-01-01T00:00:00Z",
+            "finished_at": "2026-01-01T00:01:00Z",
+            "duration_ms": 1000
+        }"#;
+        let view: HeartbeatRunView = serde_json::from_str(json).unwrap();
+        assert_eq!(view.id, 1);
+        assert_eq!(view.status, "ok");
     }
 }

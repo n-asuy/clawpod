@@ -5,6 +5,7 @@ members = [
     "crates/agent",
     "crates/domain",
     "crates/config",
+    "crates/heartbeat",
     "crates/plugins",
     "crates/queue",
     "crates/routing",

@@ -250,6 +250,9 @@ mod tests {
             agents,
             teams,
             user_system_prompt: None,
+            is_heartbeat: false,
+            heartbeat_ack_max_chars: None,
+            light_context: false,
         }
     }
 

@@ -7,8 +7,8 @@ use std::{
 use anyhow::{bail, Context, Result};
 use dirs_next::home_dir;
 use domain::{
-    AgentConfig, BindingRule, ChatType, DmScope, ProviderHarness, ProviderKind, QueueMode,
-    TeamConfig,
+    AgentConfig, AgentHeartbeatConfig, BindingRule, ChannelHeartbeatConfig, ChatType, DmScope,
+    ProviderHarness, ProviderKind, QueueMode, TeamConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -182,6 +182,46 @@ fn default_heartbeat_sender() -> String {
     "Heartbeat".to_string()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentDefaultsConfig {
+    #[serde(default)]
+    pub heartbeat: Option<AgentHeartbeatConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelDefaultsConfig {
+    #[serde(default)]
+    pub heartbeat: Option<ChannelHeartbeatConfig>,
+}
+
+/// Parse a human-readable duration string into `std::time::Duration`.
+///
+/// Supported suffixes: `s` (seconds), `m` (minutes), `h` (hours).
+/// Plain numbers without suffix are treated as seconds.
+pub fn parse_duration_str(s: &str) -> Result<std::time::Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        bail!("empty duration string");
+    }
+    let (num_part, multiplier) = if let Some(n) = s.strip_suffix('h') {
+        (n, 3600u64)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60u64)
+    } else if let Some(n) = s.strip_suffix('s') {
+        (n, 1u64)
+    } else {
+        (s, 1u64)
+    };
+    let value: u64 = num_part
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid duration: {s}"))?;
+    if value == 0 {
+        bail!("duration must be greater than zero: {s}");
+    }
+    Ok(std::time::Duration::from_secs(value * multiplier))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomProviderConfig {
     pub name: String,
@@ -202,6 +242,8 @@ pub struct TelegramConfig {
     pub bot_token_env: Option<String>,
     #[serde(default)]
     pub access: Option<ChannelAccessConfig>,
+    #[serde(default)]
+    pub heartbeat: Option<ChannelHeartbeatConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -216,6 +258,8 @@ pub struct DiscordConfig {
     pub mention_only: bool,
     #[serde(default)]
     pub access: Option<ChannelAccessConfig>,
+    #[serde(default)]
+    pub heartbeat: Option<ChannelHeartbeatConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -230,6 +274,8 @@ pub struct SlackConfig {
     pub app_token_env: Option<String>,
     #[serde(default)]
     pub access: Option<ChannelAccessConfig>,
+    #[serde(default)]
+    pub heartbeat: Option<ChannelHeartbeatConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -381,6 +427,8 @@ pub fn evaluate_ingress_policy(
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChannelsConfig {
+    #[serde(default)]
+    pub defaults: Option<ChannelDefaultsConfig>,
     pub telegram: Option<TelegramConfig>,
     pub discord: Option<DiscordConfig>,
     pub slack: Option<SlackConfig>,
@@ -402,6 +450,8 @@ pub struct RuntimeConfig {
     pub runner: RunnerConfig,
     #[serde(default)]
     pub heartbeat: HeartbeatConfig,
+    #[serde(default)]
+    pub agent_defaults: Option<AgentDefaultsConfig>,
     #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,
     #[serde(default)]
@@ -429,6 +479,7 @@ impl Default for RuntimeConfig {
                 provider_id: None,
                 system_prompt: None,
                 prompt_file: None,
+                heartbeat: None,
             },
         );
 
@@ -440,6 +491,7 @@ impl Default for RuntimeConfig {
             chain: ChainConfig::default(),
             runner: RunnerConfig::default(),
             heartbeat: HeartbeatConfig::default(),
+            agent_defaults: None,
             agents,
             custom_providers: HashMap::new(),
             teams: HashMap::new(),
@@ -984,8 +1036,8 @@ pub fn read_codex_access_token() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_jwt_exp, evaluate_ingress_policy, ChannelAccessConfig, DirectMessagePolicy,
-        GroupPolicy, IngressDecision,
+        decode_jwt_exp, evaluate_ingress_policy, parse_duration_str, ChannelAccessConfig,
+        DirectMessagePolicy, GroupPolicy, IngressDecision, RuntimeConfig,
     };
     use domain::ChatType;
 
@@ -1124,6 +1176,136 @@ mod tests {
 
         std::env::remove_var("CODEX_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parse_duration_seconds() {
+        assert_eq!(parse_duration_str("60s").unwrap().as_secs(), 60);
+        assert_eq!(parse_duration_str("120").unwrap().as_secs(), 120);
+    }
+
+    #[test]
+    fn parse_duration_minutes() {
+        assert_eq!(parse_duration_str("30m").unwrap().as_secs(), 1800);
+        assert_eq!(parse_duration_str("1m").unwrap().as_secs(), 60);
+    }
+
+    #[test]
+    fn parse_duration_hours() {
+        assert_eq!(parse_duration_str("1h").unwrap().as_secs(), 3600);
+        assert_eq!(parse_duration_str("2h").unwrap().as_secs(), 7200);
+    }
+
+    #[test]
+    fn parse_duration_rejects_zero() {
+        assert!(parse_duration_str("0m").is_err());
+        assert!(parse_duration_str("0").is_err());
+    }
+
+    #[test]
+    fn parse_duration_rejects_empty() {
+        assert!(parse_duration_str("").is_err());
+        assert!(parse_duration_str("  ").is_err());
+    }
+
+    #[test]
+    fn parse_duration_rejects_invalid() {
+        assert!(parse_duration_str("abc").is_err());
+        assert!(parse_duration_str("10x").is_err());
+    }
+
+    #[test]
+    fn config_with_agent_heartbeat_parses() {
+        let toml = r#"
+[agents.default]
+name = "Default"
+model = "claude-sonnet-4-6"
+
+[agents.default.heartbeat]
+every = "30m"
+target = "last"
+ack_max_chars = 200
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        let agent = config.agents.get("default").unwrap();
+        let hb = agent.heartbeat.as_ref().unwrap();
+        assert_eq!(hb.every.as_deref(), Some("30m"));
+        assert_eq!(hb.target, Some(domain::HeartbeatTarget::Last));
+        assert_eq!(hb.ack_max_chars, Some(200));
+    }
+
+    #[test]
+    fn config_with_agent_defaults_heartbeat_parses() {
+        let toml = r#"
+[agent_defaults.heartbeat]
+every = "1h"
+target = "none"
+prompt = "Check status"
+ack_max_chars = 300
+direct_policy = "block"
+light_context = true
+isolated_session = false
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        let defaults = config.agent_defaults.unwrap();
+        let hb = defaults.heartbeat.unwrap();
+        assert_eq!(hb.every.as_deref(), Some("1h"));
+        assert_eq!(hb.target, Some(domain::HeartbeatTarget::None));
+        assert_eq!(hb.prompt.as_deref(), Some("Check status"));
+        assert_eq!(hb.direct_policy, Some(domain::HeartbeatDirectPolicy::Block));
+        assert_eq!(hb.light_context, Some(true));
+    }
+
+    #[test]
+    fn config_with_channel_heartbeat_visibility_parses() {
+        let toml = r#"
+[channels.defaults.heartbeat]
+show_ok = false
+show_alerts = true
+use_indicator = true
+
+[channels.telegram]
+bot_token = "test"
+
+[channels.telegram.heartbeat]
+show_ok = true
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        let defaults_hb = config
+            .channels
+            .defaults
+            .as_ref()
+            .unwrap()
+            .heartbeat
+            .as_ref()
+            .unwrap();
+        assert_eq!(defaults_hb.show_ok, Some(false));
+        assert_eq!(defaults_hb.show_alerts, Some(true));
+
+        let telegram_hb = config
+            .channels
+            .telegram
+            .as_ref()
+            .unwrap()
+            .heartbeat
+            .as_ref()
+            .unwrap();
+        assert_eq!(telegram_hb.show_ok, Some(true));
+    }
+
+    #[test]
+    fn config_backward_compat_old_heartbeat_only() {
+        let toml = r#"
+[heartbeat]
+enabled = true
+interval_sec = 600
+sender = "hb-bot"
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        assert!(config.heartbeat.enabled);
+        assert_eq!(config.heartbeat.interval_sec, 600);
+        assert_eq!(config.heartbeat.sender, "hb-bot");
+        assert!(config.agent_defaults.is_none());
     }
 
     #[test]

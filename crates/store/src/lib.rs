@@ -23,6 +23,20 @@ pub struct SessionSummary {
     pub agent_id: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub last_channel: Option<String>,
+    #[serde(default)]
+    pub last_peer_id: Option<String>,
+    #[serde(default)]
+    pub last_account_id: Option<String>,
+    #[serde(default)]
+    pub last_chat_type: Option<String>,
+    #[serde(default)]
+    pub last_sender_id: Option<String>,
+    #[serde(default)]
+    pub last_heartbeat_text: Option<String>,
+    #[serde(default)]
+    pub last_heartbeat_sent_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +81,8 @@ struct StoreSnapshot {
     sessions: HashMap<String, SessionRecord>,
     #[serde(default)]
     sender_access: HashMap<String, SenderAccessRecord>,
+    #[serde(default)]
+    routing_affinity: HashMap<String, RoutingAffinityRecord>,
     #[serde(default)]
     next_event_id: i64,
     #[serde(default)]
@@ -132,12 +148,36 @@ struct ChatroomMessageRecord {
 struct HeartbeatRunRecord {
     id: i64,
     agent_id: String,
+    #[serde(default = "default_heartbeat_reason")]
+    reason: String,
+    #[serde(default)]
+    session_key: Option<String>,
     prompt: String,
     output: Option<String>,
+    #[serde(default)]
+    preview: Option<String>,
     status: String,
+    #[serde(default)]
+    skip_reason: Option<String>,
+    #[serde(default)]
+    delivery_channel: Option<String>,
+    #[serde(default)]
+    delivery_recipient: Option<String>,
+    #[serde(default)]
+    delivery_mode: Option<String>,
+    #[serde(default)]
+    used_model: Option<String>,
+    #[serde(default)]
+    used_prompt: Option<String>,
+    #[serde(default)]
+    indicator_type: Option<String>,
     started_at: String,
     finished_at: String,
     duration_ms: i64,
+}
+
+fn default_heartbeat_reason() -> String {
+    "scheduled".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +186,24 @@ struct SessionRecord {
     agent_id: String,
     created_at: String,
     updated_at: String,
+    #[serde(default)]
+    last_channel: Option<String>,
+    #[serde(default)]
+    last_peer_id: Option<String>,
+    #[serde(default)]
+    last_account_id: Option<String>,
+    #[serde(default)]
+    last_chat_type: Option<String>,
+    #[serde(default)]
+    last_sender_id: Option<String>,
+    #[serde(default)]
+    last_message_id: Option<String>,
+    #[serde(default)]
+    last_thread_id: Option<String>,
+    #[serde(default)]
+    last_heartbeat_text: Option<String>,
+    #[serde(default)]
+    last_heartbeat_sent_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +227,14 @@ struct SenderAccessRecord {
     failed_pairing_attempts: u32,
     #[serde(default)]
     locked_until: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RoutingAffinityRecord {
+    channel: String,
+    sender_id: String,
+    agent_id: String,
+    updated_at: String,
 }
 
 impl StateStore {
@@ -379,12 +445,23 @@ impl StateStore {
             .collect())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn record_heartbeat_run(
         &self,
         agent_id: &str,
+        reason: &str,
+        session_key: Option<&str>,
         prompt: &str,
         output: Option<&str>,
+        preview: Option<&str>,
         status: &str,
+        skip_reason: Option<&str>,
+        delivery_channel: Option<&str>,
+        delivery_recipient: Option<&str>,
+        delivery_mode: Option<&str>,
+        used_model: Option<&str>,
+        used_prompt: Option<&str>,
+        indicator_type: Option<&str>,
         started_at: &str,
         finished_at: &str,
         duration_ms: i64,
@@ -395,25 +472,26 @@ impl StateStore {
         let record = HeartbeatRunRecord {
             id: snapshot.next_heartbeat_run_id,
             agent_id: agent_id.to_string(),
+            reason: reason.to_string(),
+            session_key: session_key.map(ToString::to_string),
             prompt: prompt.to_string(),
             output: output.map(ToString::to_string),
+            preview: preview.map(ToString::to_string),
             status: status.to_string(),
+            skip_reason: skip_reason.map(ToString::to_string),
+            delivery_channel: delivery_channel.map(ToString::to_string),
+            delivery_recipient: delivery_recipient.map(ToString::to_string),
+            delivery_mode: delivery_mode.map(ToString::to_string),
+            used_model: used_model.map(ToString::to_string),
+            used_prompt: used_prompt.map(ToString::to_string),
+            indicator_type: indicator_type.map(ToString::to_string),
             started_at: started_at.to_string(),
             finished_at: finished_at.to_string(),
             duration_ms,
         };
         snapshot.heartbeat_runs.push(record.clone());
         self.persist_locked(&snapshot)?;
-        Ok(HeartbeatRunView {
-            id: record.id,
-            agent_id: record.agent_id,
-            prompt: record.prompt,
-            output: record.output,
-            status: record.status,
-            started_at: record.started_at,
-            finished_at: record.finished_at,
-            duration_ms: record.duration_ms,
-        })
+        Ok(heartbeat_run_to_view(record))
     }
 
     pub fn list_heartbeat_runs(
@@ -435,19 +513,7 @@ impl StateStore {
                 .then_with(|| b.id.cmp(&a.id))
         });
         runs.truncate(limit);
-        Ok(runs
-            .into_iter()
-            .map(|record| HeartbeatRunView {
-                id: record.id,
-                agent_id: record.agent_id,
-                prompt: record.prompt,
-                output: record.output,
-                status: record.status,
-                started_at: record.started_at,
-                finished_at: record.finished_at,
-                duration_ms: record.duration_ms,
-            })
-            .collect())
+        Ok(runs.into_iter().map(heartbeat_run_to_view).collect())
     }
 
     pub fn session_exists(&self, session_key: &str) -> Result<bool> {
@@ -472,8 +538,84 @@ impl StateStore {
                 agent_id: agent_id.to_string(),
                 created_at: now.clone(),
                 updated_at: now,
+                last_channel: None,
+                last_peer_id: None,
+                last_account_id: None,
+                last_chat_type: None,
+                last_sender_id: None,
+                last_message_id: None,
+                last_thread_id: None,
+                last_heartbeat_text: None,
+                last_heartbeat_sent_at: None,
             });
         self.persist_locked(&snapshot)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn touch_session_with_context(
+        &self,
+        session_key: &str,
+        agent_id: &str,
+        channel: &str,
+        peer_id: &str,
+        account_id: Option<&str>,
+        chat_type: &str,
+        sender_id: &str,
+        message_id: &str,
+    ) -> Result<()> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        let now = now_rfc3339();
+        snapshot
+            .sessions
+            .entry(session_key.to_string())
+            .and_modify(|session| {
+                session.agent_id = agent_id.to_string();
+                session.updated_at = now.clone();
+                session.last_channel = Some(channel.to_string());
+                session.last_peer_id = Some(peer_id.to_string());
+                session.last_account_id = account_id.map(ToString::to_string);
+                session.last_chat_type = Some(chat_type.to_string());
+                session.last_sender_id = Some(sender_id.to_string());
+                session.last_message_id = Some(message_id.to_string());
+            })
+            .or_insert_with(|| SessionRecord {
+                session_key: session_key.to_string(),
+                agent_id: agent_id.to_string(),
+                created_at: now.clone(),
+                updated_at: now,
+                last_channel: Some(channel.to_string()),
+                last_peer_id: Some(peer_id.to_string()),
+                last_account_id: account_id.map(ToString::to_string),
+                last_chat_type: Some(chat_type.to_string()),
+                last_sender_id: Some(sender_id.to_string()),
+                last_message_id: Some(message_id.to_string()),
+                last_thread_id: None,
+                last_heartbeat_text: None,
+                last_heartbeat_sent_at: None,
+            });
+        self.persist_locked(&snapshot)
+    }
+
+    pub fn update_session_heartbeat(
+        &self,
+        session_key: &str,
+        text: &str,
+        sent_at: &str,
+    ) -> Result<()> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        if let Some(session) = snapshot.sessions.get_mut(session_key) {
+            session.last_heartbeat_text = Some(text.to_string());
+            session.last_heartbeat_sent_at = Some(sent_at.to_string());
+        }
+        self.persist_locked(&snapshot)
+    }
+
+    pub fn get_session(&self, session_key: &str) -> Result<Option<SessionSummary>> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        Ok(snapshot.sessions.get(session_key).cloned().map(session_to_summary))
     }
 
     pub fn clear_agent_sessions(&self, agent_id: &str) -> Result<()> {
@@ -490,15 +632,45 @@ impl StateStore {
         self.refresh_locked(&mut snapshot)?;
         let mut sessions = snapshot.sessions.values().cloned().collect::<Vec<_>>();
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        Ok(sessions
-            .into_iter()
-            .map(|session| SessionSummary {
-                session_key: session.session_key,
-                agent_id: session.agent_id,
-                created_at: session.created_at,
-                updated_at: session.updated_at,
-            })
-            .collect())
+        Ok(sessions.into_iter().map(session_to_summary).collect())
+    }
+
+    /// Record which agent a sender on a given channel last interacted with.
+    /// Only called for external DM messages with explicit @agent routing.
+    pub fn set_routing_affinity(
+        &self,
+        channel: &str,
+        sender_id: &str,
+        agent_id: &str,
+    ) -> Result<()> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        let key = routing_affinity_key(channel, sender_id);
+        snapshot.routing_affinity.insert(
+            key,
+            RoutingAffinityRecord {
+                channel: channel.to_string(),
+                sender_id: sender_id.to_string(),
+                agent_id: agent_id.to_string(),
+                updated_at: now_rfc3339(),
+            },
+        );
+        self.persist_locked(&snapshot)
+    }
+
+    /// Look up the last agent a sender interacted with on a channel.
+    pub fn get_routing_affinity(
+        &self,
+        channel: &str,
+        sender_id: &str,
+    ) -> Result<Option<String>> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        let key = routing_affinity_key(channel, sender_id);
+        Ok(snapshot
+            .routing_affinity
+            .get(&key)
+            .map(|r| r.agent_id.clone()))
     }
 
     pub fn list_recent_runs(&self, limit: usize) -> Result<Vec<Value>> {
@@ -913,6 +1085,10 @@ fn sender_access_key(channel: &str, sender_id: &str) -> String {
     format!("{channel}:{sender_id}")
 }
 
+fn routing_affinity_key(channel: &str, sender_id: &str) -> String {
+    format!("affinity:{channel}:{sender_id}")
+}
+
 fn sender_access_status_rank(status: &str) -> usize {
     match status {
         "pending" => 0,
@@ -931,6 +1107,45 @@ fn normalize_optional_str(value: Option<&str>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
+}
+
+fn heartbeat_run_to_view(record: HeartbeatRunRecord) -> HeartbeatRunView {
+    HeartbeatRunView {
+        id: record.id,
+        agent_id: record.agent_id,
+        reason: record.reason,
+        session_key: record.session_key,
+        prompt: record.prompt,
+        output: record.output,
+        preview: record.preview,
+        status: record.status,
+        skip_reason: record.skip_reason,
+        delivery_channel: record.delivery_channel,
+        delivery_recipient: record.delivery_recipient,
+        delivery_mode: record.delivery_mode,
+        used_model: record.used_model,
+        used_prompt: record.used_prompt,
+        indicator_type: record.indicator_type,
+        started_at: record.started_at,
+        finished_at: record.finished_at,
+        duration_ms: record.duration_ms,
+    }
+}
+
+fn session_to_summary(session: SessionRecord) -> SessionSummary {
+    SessionSummary {
+        session_key: session.session_key,
+        agent_id: session.agent_id,
+        created_at: session.created_at,
+        updated_at: session.updated_at,
+        last_channel: session.last_channel,
+        last_peer_id: session.last_peer_id,
+        last_account_id: session.last_account_id,
+        last_chat_type: session.last_chat_type,
+        last_sender_id: session.last_sender_id,
+        last_heartbeat_text: session.last_heartbeat_text,
+        last_heartbeat_sent_at: session.last_heartbeat_sent_at,
+    }
 }
 
 fn sender_access_from_record(record: SenderAccessRecord) -> SenderAccessEntry {
@@ -1053,9 +1268,19 @@ mod tests {
         store
             .record_heartbeat_run(
                 "default",
+                "scheduled",
+                Some("agent:default:main"),
                 "check backlog",
                 Some("all clear"),
-                "ok",
+                None,
+                "ran",
+                None,
+                None,
+                None,
+                Some("suppressed"),
+                Some("claude-sonnet-4-6"),
+                None,
+                Some("ok"),
                 "2025-01-01T00:00:00Z",
                 "2025-01-01T00:00:01Z",
                 1000,
@@ -1064,9 +1289,19 @@ mod tests {
         store
             .record_heartbeat_run(
                 "reviewer",
+                "manual",
+                None,
                 "review queue",
                 Some("two pending"),
-                "ok",
+                Some("two pending"),
+                "ran",
+                None,
+                Some("telegram"),
+                Some("U123"),
+                Some("delivered"),
+                None,
+                None,
+                Some("alert"),
                 "2025-01-01T00:05:00Z",
                 "2025-01-01T00:05:01Z",
                 900,
@@ -1076,13 +1311,71 @@ mod tests {
         let runs = store.list_heartbeat_runs(10, None).expect("list runs");
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].agent_id, "reviewer");
+        assert_eq!(runs[0].reason, "manual");
+        assert_eq!(runs[0].delivery_channel.as_deref(), Some("telegram"));
         assert_eq!(runs[1].agent_id, "default");
+        assert_eq!(runs[1].reason, "scheduled");
+        assert!(runs[1].delivery_channel.is_none());
 
         let filtered = store
             .list_heartbeat_runs(10, Some("default"))
             .expect("list filtered");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].prompt, "check backlog");
+        assert_eq!(
+            filtered[0].session_key.as_deref(),
+            Some("agent:default:main")
+        );
+    }
+
+    #[test]
+    fn touch_session_with_context_stores_delivery_info() {
+        let path = temp_state_path("session_ctx");
+        let store = StateStore::new(&path).expect("store");
+
+        store
+            .touch_session_with_context(
+                "agent:default:main",
+                "default",
+                "telegram",
+                "C123",
+                None,
+                "direct",
+                "U456",
+                "msg-1",
+            )
+            .expect("touch");
+
+        let session = store
+            .get_session("agent:default:main")
+            .expect("get")
+            .expect("exists");
+        assert_eq!(session.last_channel.as_deref(), Some("telegram"));
+        assert_eq!(session.last_peer_id.as_deref(), Some("C123"));
+        assert_eq!(session.last_sender_id.as_deref(), Some("U456"));
+    }
+
+    #[test]
+    fn update_session_heartbeat_records_last_text() {
+        let path = temp_state_path("session_hb");
+        let store = StateStore::new(&path).expect("store");
+
+        store
+            .touch_session("agent:default:main", "default")
+            .expect("touch");
+        store
+            .update_session_heartbeat(
+                "agent:default:main",
+                "HEARTBEAT_OK",
+                "2026-01-01T00:00:00Z",
+            )
+            .expect("update");
+
+        let session = store
+            .get_session("agent:default:main")
+            .expect("get")
+            .expect("exists");
+        assert_eq!(session.last_heartbeat_text.as_deref(), Some("HEARTBEAT_OK"));
     }
 
     #[test]
@@ -1497,5 +1790,97 @@ mod tests {
 
         let found = store.find_pending_by_code("WRONGONE").expect("find");
         assert!(found.is_none());
+    }
+
+    // -- routing affinity --
+
+    #[test]
+    fn routing_affinity_set_and_get() {
+        let path = temp_state_path("affinity_basic");
+        let store = StateStore::new(&path).expect("store");
+
+        assert!(store
+            .get_routing_affinity("slack", "U123")
+            .expect("get")
+            .is_none());
+
+        store
+            .set_routing_affinity("slack", "U123", "coder")
+            .expect("set");
+
+        let agent = store
+            .get_routing_affinity("slack", "U123")
+            .expect("get")
+            .expect("exists");
+        assert_eq!(agent, "coder");
+    }
+
+    #[test]
+    fn routing_affinity_updates_on_switch() {
+        let path = temp_state_path("affinity_switch");
+        let store = StateStore::new(&path).expect("store");
+
+        store
+            .set_routing_affinity("telegram", "T456", "coder")
+            .expect("set first");
+        store
+            .set_routing_affinity("telegram", "T456", "reviewer")
+            .expect("set second");
+
+        let agent = store
+            .get_routing_affinity("telegram", "T456")
+            .expect("get")
+            .expect("exists");
+        assert_eq!(agent, "reviewer");
+    }
+
+    #[test]
+    fn routing_affinity_scoped_per_channel_and_sender() {
+        let path = temp_state_path("affinity_scope");
+        let store = StateStore::new(&path).expect("store");
+
+        store
+            .set_routing_affinity("slack", "U1", "coder")
+            .expect("set");
+        store
+            .set_routing_affinity("telegram", "U1", "reviewer")
+            .expect("set");
+
+        assert_eq!(
+            store
+                .get_routing_affinity("slack", "U1")
+                .expect("get")
+                .as_deref(),
+            Some("coder")
+        );
+        assert_eq!(
+            store
+                .get_routing_affinity("telegram", "U1")
+                .expect("get")
+                .as_deref(),
+            Some("reviewer")
+        );
+        assert!(store
+            .get_routing_affinity("discord", "U1")
+            .expect("get")
+            .is_none());
+    }
+
+    #[test]
+    fn routing_affinity_survives_reload() {
+        let path = temp_state_path("affinity_persist");
+        {
+            let store = StateStore::new(&path).expect("store");
+            store
+                .set_routing_affinity("slack", "U1", "coder")
+                .expect("set");
+        }
+        // Reopen store from same file
+        let store = StateStore::new(&path).expect("reopen");
+        let agent = store
+            .get_routing_affinity("slack", "U1")
+            .expect("get")
+            .expect("exists");
+        assert_eq!(agent, "coder");
     }
 }
