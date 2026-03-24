@@ -28,6 +28,7 @@ use tracing::info;
 use uuid::Uuid;
 
 type ApiResult<T> = std::result::Result<T, (StatusCode, String)>;
+const RUNTIME_RESTART_EXIT_CODE: i32 = 75;
 
 use axum::http::StatusCode;
 
@@ -297,12 +298,13 @@ async fn restart_runtime(State(state): State<AppState>) -> ApiResult<Json<Value>
         "runtime_restart_requested",
         json!({
             "pid": std::process::id(),
+            "exit_code": RUNTIME_RESTART_EXIT_CODE,
         }),
     );
 
     tokio::spawn(async {
         sleep(Duration::from_millis(200)).await;
-        std::process::exit(0);
+        std::process::exit(RUNTIME_RESTART_EXIT_CODE);
     });
 
     Ok(Json(json!({

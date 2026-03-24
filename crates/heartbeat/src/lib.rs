@@ -523,10 +523,11 @@ fn is_effectively_empty(content: &str) -> bool {
 }
 
 fn truncate_preview(text: &str, max: usize) -> String {
-    if text.len() <= max {
+    if text.chars().count() <= max {
         text.to_string()
     } else {
-        format!("{}...", &text[..max.min(text.len())])
+        let truncated: String = text.chars().take(max).collect();
+        format!("{truncated}...")
     }
 }
 
@@ -617,6 +618,15 @@ mod tests {
         let result = truncate_preview(&long, 100);
         assert!(result.ends_with("..."));
         assert!(result.len() <= 104);
+    }
+
+    #[test]
+    fn truncate_preview_preserves_utf8_boundaries() {
+        let text = "こんにちは。東京は現在12°Cで、くもりです。今日は最高18°C、最低11°Cの予報です。";
+        let result = truncate_preview(text, 40);
+        assert!(result.ends_with("..."));
+        assert!(result.is_char_boundary(result.len()));
+        assert!(result.starts_with("こんにちは。東京"));
     }
 
     #[test]
