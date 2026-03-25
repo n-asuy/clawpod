@@ -122,14 +122,6 @@ static MODEL_CATALOG: LazyLock<Vec<ModelDefinition>> = LazyLock::new(|| {
             default_think_level: ThinkLevel::Low,
             context_window: Some(1_050_000),
         },
-        ModelDefinition {
-            id: "gpt-5.4-nano".into(),
-            name: "GPT-5.4 Nano".into(),
-            provider: ProviderKind::Openai,
-            supports_thinking: true,
-            default_think_level: ThinkLevel::Low,
-            context_window: Some(1_050_000),
-        },
     ]
 });
 

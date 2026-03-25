@@ -13,9 +13,13 @@ name = "agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "domain",
+ "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

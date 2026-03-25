@@ -570,6 +570,31 @@ impl QueueProcessor {
                     json!({ "task_id": task_id, "agent_id": agent_id }),
                 )
                 .await?;
+
+                // Fire-and-forget memory consolidation via background CLI call.
+                if agent::consolidation::should_consolidate(&event.text, &event.channel) {
+                    let user_msg = event.text.clone();
+                    let assistant_resp = text.clone();
+                    let memory_dir = session_dir.join("memory");
+                    let provider = self
+                        .agent_or_err(&agent_id)
+                        .map(|a| a.provider)
+                        .unwrap_or_default();
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            agent::consolidation::consolidate_turn(
+                                &user_msg,
+                                &assistant_resp,
+                                &memory_dir,
+                                provider,
+                            )
+                            .await
+                        {
+                            tracing::debug!("memory consolidation skipped: {e}");
+                        }
+                    });
+                }
+
                 Ok(())
             }
             Err(err) => {

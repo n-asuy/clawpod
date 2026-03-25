@@ -136,7 +136,6 @@ const EDITABLE_FILES: &[(&str, &str)] = &[
     ("", "focus.md"),
     ("memory", "reflections.md"),
     ("memory", "curiosity_journal.md"),
-    (".agents/skills/memory", "SKILL.md"),
 ];
 
 pub async fn run(
