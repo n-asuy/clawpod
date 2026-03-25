@@ -23,6 +23,7 @@ use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
 const ACK_REACTIONS: &[&str] = &["⚡", "🦀", "🙌", "💪", "👌", "👀", "👣"];
+const DISCORD_MAX_CONTENT_LEN: usize = 2000;
 
 fn pick_ack_reaction(seed: u64) -> &'static str {
     ACK_REACTIONS[seed as usize % ACK_REACTIONS.len()]
@@ -345,7 +346,13 @@ async fn outgoing_loop(
                     live.stop_typing(&message.recipient_id);
                 }
                 Err(err) => {
-                    warn!(path = %message.path.display(), "discord send failed: {err:#}");
+                    let err_str = format!("{err:#}");
+                    if is_permanent_send_error(&err_str) {
+                        warn!(path = %message.path.display(), "discord send permanently failed, dropping: {err_str}");
+                        ack_outgoing_message(&message.path).await?;
+                    } else {
+                        warn!(path = %message.path.display(), "discord send failed: {err_str}");
+                    }
                 }
             }
         }
@@ -357,6 +364,16 @@ async fn outgoing_loop(
     }
 }
 
+fn is_permanent_send_error(err: &str) -> bool {
+    const PATTERNS: &[&str] = &[
+        "Message too large",
+        "Unknown Channel",
+        "Missing Access",
+        "Missing Permissions",
+    ];
+    PATTERNS.iter().any(|p| err.contains(p))
+}
+
 async fn send_outgoing(http: &Http, message: &queue::QueuedOutgoingMessage) -> Result<()> {
     let channel_id = ChannelId::new(
         message
@@ -365,40 +382,98 @@ async fn send_outgoing(http: &Http, message: &queue::QueuedOutgoingMessage) -> R
             .context("invalid discord channel id")?,
     );
 
-    let mut builder = if message.message.trim().is_empty() {
-        CreateMessage::new()
+    let chunks = if message.message.trim().is_empty() {
+        vec![""]
     } else {
-        CreateMessage::new().content(message.message.clone())
+        split_message_chunks(&message.message, DISCORD_MAX_CONTENT_LEN)
     };
-    if let Some(reply_to) = parse_discord_message_id(&message.message_id) {
-        builder = builder
-            .reference_message((channel_id, MessageId::new(reply_to)))
-            .allowed_mentions(CreateAllowedMentions::new().replied_user(false));
-    }
 
-    let mut attachments = vec![];
-    for file in &message.files {
-        let path = PathBuf::from(file);
-        if !path.exists() {
-            warn!(path = %path.display(), "discord attachment missing");
-            continue;
+    for (i, chunk) in chunks.iter().enumerate() {
+        let mut builder = if chunk.is_empty() {
+            CreateMessage::new()
+        } else {
+            CreateMessage::new().content(chunk.to_string())
+        };
+
+        if i == 0 {
+            if let Some(reply_to) = parse_discord_message_id(&message.message_id) {
+                builder = builder
+                    .reference_message((channel_id, MessageId::new(reply_to)))
+                    .allowed_mentions(CreateAllowedMentions::new().replied_user(false));
+            }
         }
-        attachments.push(
-            CreateAttachment::path(&path)
-                .await
-                .with_context(|| format!("failed to read attachment: {}", path.display()))?,
-        );
+
+        if i == 0 {
+            let mut attachments = vec![];
+            for file in &message.files {
+                let path = PathBuf::from(file);
+                if !path.exists() {
+                    warn!(path = %path.display(), "discord attachment missing");
+                    continue;
+                }
+                attachments.push(
+                    CreateAttachment::path(&path)
+                        .await
+                        .with_context(|| {
+                            format!("failed to read attachment: {}", path.display())
+                        })?,
+                );
+            }
+            if !attachments.is_empty() {
+                builder = builder.add_files(attachments);
+            }
+        }
+
+        channel_id
+            .send_message(http, builder)
+            .await
+            .context("failed to send discord message")?;
     }
 
-    if !attachments.is_empty() {
-        builder = builder.add_files(attachments);
-    }
-
-    channel_id
-        .send_message(http, builder)
-        .await
-        .context("failed to send discord message")?;
     Ok(())
+}
+
+/// Split text into chunks that fit within Discord's character limit.
+/// Tries to break at newlines, then spaces, then forces a hard break.
+fn split_message_chunks(text: &str, max_chars: usize) -> Vec<&str> {
+    if text.chars().count() <= max_chars {
+        return vec![text];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+
+    while start < text.len() {
+        let remaining = &text[start..];
+        if remaining.chars().count() <= max_chars {
+            chunks.push(remaining);
+            break;
+        }
+
+        let end_byte = remaining
+            .char_indices()
+            .nth(max_chars)
+            .map(|(i, _)| i)
+            .unwrap_or(remaining.len());
+
+        let search = &remaining[..end_byte];
+        let split_byte = search
+            .rfind('\n')
+            .or_else(|| search.rfind(' '))
+            .map(|pos| pos + 1)
+            .unwrap_or(end_byte);
+
+        let split_byte = if split_byte == 0 {
+            end_byte
+        } else {
+            split_byte
+        };
+
+        chunks.push(&remaining[..split_byte]);
+        start += split_byte;
+    }
+
+    chunks
 }
 
 async fn download_attachments(config: &RuntimeConfig, message: &Message) -> Result<Vec<String>> {
@@ -461,7 +536,10 @@ fn parse_discord_message_id(raw: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_discord_text, parse_discord_message_id};
+    use super::{
+        is_permanent_send_error, normalize_discord_text, parse_discord_message_id,
+        split_message_chunks,
+    };
 
     #[test]
     fn strips_plain_bot_mention() {
@@ -486,5 +564,62 @@ mod tests {
             Some(987654321)
         );
         assert_eq!(parse_discord_message_id("telegram_987654321"), None);
+    }
+
+    #[test]
+    fn short_message_stays_single_chunk() {
+        let text = "hello world";
+        let chunks = split_message_chunks(text, 2000);
+        assert_eq!(chunks, vec!["hello world"]);
+    }
+
+    #[test]
+    fn splits_at_newline_boundary() {
+        let line = "a".repeat(15);
+        let text = format!("{line}\n{line}\n{line}");
+        let chunks = split_message_chunks(&text, 20);
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks.iter().all(|c| c.chars().count() <= 20));
+        let reassembled: String = chunks.concat();
+        assert_eq!(reassembled, text);
+    }
+
+    #[test]
+    fn splits_at_space_when_no_newline() {
+        let text = "aaaa bbbb cccc dddd";
+        let chunks = split_message_chunks(text, 10);
+        assert!(chunks.iter().all(|c| c.chars().count() <= 10));
+        let reassembled: String = chunks.concat();
+        assert_eq!(reassembled, text);
+    }
+
+    #[test]
+    fn hard_breaks_when_no_delimiter() {
+        let text = "a".repeat(30);
+        let chunks = split_message_chunks(&text, 10);
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks.iter().all(|c| c.chars().count() <= 10));
+    }
+
+    #[test]
+    fn handles_multibyte_characters() {
+        // Japanese text: each char is 3 bytes in UTF-8
+        let text = "あ".repeat(30);
+        let chunks = split_message_chunks(&text, 10);
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks.iter().all(|c| c.chars().count() <= 10));
+        let reassembled: String = chunks.concat();
+        assert_eq!(reassembled, text);
+    }
+
+    #[test]
+    fn permanent_error_detection() {
+        assert!(is_permanent_send_error(
+            "failed to send discord message: Message too large.: Message too large."
+        ));
+        assert!(is_permanent_send_error("Unknown Channel"));
+        assert!(is_permanent_send_error("Missing Access"));
+        assert!(!is_permanent_send_error("connection reset by peer"));
+        assert!(!is_permanent_send_error("timeout"));
     }
 }
