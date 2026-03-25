@@ -384,6 +384,8 @@ async fn update_agent(
         Ok(())
     })
     .await?;
+    // Reset sessions so the agent picks up the updated config (model, prompt, etc.)
+    reset_sessions_for_agents(&state, &next, &[&agent_id]);
     emit_server_event(&state, "agent_updated", json!({ "agent_id": agent_id }));
     Ok(Json(json!({
         "ok": true,
@@ -470,6 +472,9 @@ async fn create_team(
         Ok(())
     })
     .await?;
+    // Reset sessions for all agents in the new team so they see updated teammate list.
+    let agent_ids: Vec<&str> = payload.team.agents.iter().map(|s| s.as_str()).collect();
+    reset_sessions_for_agents(&state, &next, &agent_ids);
     emit_server_event(&state, "team_created", json!({ "team_id": team_id }));
     Ok(Json(json!({
         "ok": true,
@@ -492,6 +497,9 @@ async fn update_team(
         Ok(())
     })
     .await?;
+    // Reset sessions for all agents in the updated team so they see new teammate list.
+    let agent_ids: Vec<&str> = payload.team.agents.iter().map(|s| s.as_str()).collect();
+    reset_sessions_for_agents(&state, &next, &agent_ids);
     emit_server_event(&state, "team_updated", json!({ "team_id": team_id }));
     Ok(Json(json!({
         "ok": true,
@@ -1053,6 +1061,21 @@ where
     write_config(&state.config_path, &next).map_err(internal_error)?;
     *state.config.write().await = next.clone();
     Ok(next)
+}
+
+/// Reset sessions for the given agent IDs: clear store state AND remove
+/// disk session directories so that the next message starts a fresh CLI
+/// session with up-to-date system prompts.
+fn reset_sessions_for_agents(state: &AppState, config: &RuntimeConfig, agent_ids: &[&str]) {
+    for &agent_id in agent_ids {
+        if let Err(e) = state.store.clear_agent_sessions(agent_id) {
+            tracing::warn!("failed to clear store sessions for {agent_id}: {e:#}");
+        }
+        let agent_root = config.resolve_agent_workdir(agent_id);
+        if let Err(e) = agent::reset_agent_workspace(&agent_root) {
+            tracing::warn!("failed to reset workspace sessions for {agent_id}: {e:#}");
+        }
+    }
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, String) {
