@@ -319,16 +319,15 @@ impl QueueProcessor {
 
         // Sticky routing: if no explicit @mention and no binding match,
         // check if this sender has a routing affinity from a previous conversation.
-        // Only applies to DM messages from external channels.
         if !was_explicit_mention
             && route.agent_id == default_agent
-            && event.chat_type == domain::ChatType::Direct
             && !is_internal_channel(&event.channel)
         {
-            if let Ok(Some(affinity_agent)) = self
-                .store
-                .get_routing_affinity(&event.channel, &event.sender_id)
-            {
+            if let Ok(Some(affinity_agent)) = self.store.get_routing_affinity(
+                &event.channel,
+                &event.peer_id,
+                &event.sender_id,
+            ) {
                 if self.config.agents.contains_key(&affinity_agent) {
                     route.agent_id = affinity_agent;
                 }
@@ -353,16 +352,15 @@ impl QueueProcessor {
             default_agent.clone()
         };
 
-        // Update routing affinity for explicit @mentions on external DM channels.
+        // Update routing affinity for explicit @mentions on external channels.
         // This ensures that the next message without @mention goes to the same agent.
-        if was_explicit_mention
-            && event.chat_type == domain::ChatType::Direct
-            && !is_internal_channel(&event.channel)
-        {
-            if let Err(err) = self
-                .store
-                .set_routing_affinity(&event.channel, &event.sender_id, &agent_id)
-            {
+        if was_explicit_mention && !is_internal_channel(&event.channel) {
+            if let Err(err) = self.store.set_routing_affinity(
+                &event.channel,
+                &event.peer_id,
+                &event.sender_id,
+                &agent_id,
+            ) {
                 warn!(error = %err, "failed to set routing affinity");
             }
         }

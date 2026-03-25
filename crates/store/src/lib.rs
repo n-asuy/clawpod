@@ -636,16 +636,17 @@ impl StateStore {
     }
 
     /// Record which agent a sender on a given channel last interacted with.
-    /// Only called for external DM messages with explicit @agent routing.
+    /// `peer_id` scopes the affinity to a specific conversation (e.g. Discord channel ID).
     pub fn set_routing_affinity(
         &self,
         channel: &str,
+        peer_id: &str,
         sender_id: &str,
         agent_id: &str,
     ) -> Result<()> {
         let mut snapshot = self.lock_snapshot()?;
         self.refresh_locked(&mut snapshot)?;
-        let key = routing_affinity_key(channel, sender_id);
+        let key = routing_affinity_key(channel, peer_id, sender_id);
         snapshot.routing_affinity.insert(
             key,
             RoutingAffinityRecord {
@@ -662,11 +663,12 @@ impl StateStore {
     pub fn get_routing_affinity(
         &self,
         channel: &str,
+        peer_id: &str,
         sender_id: &str,
     ) -> Result<Option<String>> {
         let mut snapshot = self.lock_snapshot()?;
         self.refresh_locked(&mut snapshot)?;
-        let key = routing_affinity_key(channel, sender_id);
+        let key = routing_affinity_key(channel, peer_id, sender_id);
         Ok(snapshot
             .routing_affinity
             .get(&key)
@@ -1085,8 +1087,8 @@ fn sender_access_key(channel: &str, sender_id: &str) -> String {
     format!("{channel}:{sender_id}")
 }
 
-fn routing_affinity_key(channel: &str, sender_id: &str) -> String {
-    format!("affinity:{channel}:{sender_id}")
+fn routing_affinity_key(channel: &str, peer_id: &str, sender_id: &str) -> String {
+    format!("affinity:{channel}:{peer_id}:{sender_id}")
 }
 
 fn sender_access_status_rank(status: &str) -> usize {
@@ -1800,16 +1802,16 @@ mod tests {
         let store = StateStore::new(&path).expect("store");
 
         assert!(store
-            .get_routing_affinity("slack", "U123")
+            .get_routing_affinity("slack", "D100", "U123")
             .expect("get")
             .is_none());
 
         store
-            .set_routing_affinity("slack", "U123", "coder")
+            .set_routing_affinity("slack", "D100", "U123", "coder")
             .expect("set");
 
         let agent = store
-            .get_routing_affinity("slack", "U123")
+            .get_routing_affinity("slack", "D100", "U123")
             .expect("get")
             .expect("exists");
         assert_eq!(agent, "coder");
@@ -1821,47 +1823,47 @@ mod tests {
         let store = StateStore::new(&path).expect("store");
 
         store
-            .set_routing_affinity("telegram", "T456", "coder")
+            .set_routing_affinity("telegram", "C456", "T456", "coder")
             .expect("set first");
         store
-            .set_routing_affinity("telegram", "T456", "reviewer")
+            .set_routing_affinity("telegram", "C456", "T456", "reviewer")
             .expect("set second");
 
         let agent = store
-            .get_routing_affinity("telegram", "T456")
+            .get_routing_affinity("telegram", "C456", "T456")
             .expect("get")
             .expect("exists");
         assert_eq!(agent, "reviewer");
     }
 
     #[test]
-    fn routing_affinity_scoped_per_channel_and_sender() {
+    fn routing_affinity_scoped_per_channel_peer_and_sender() {
         let path = temp_state_path("affinity_scope");
         let store = StateStore::new(&path).expect("store");
 
         store
-            .set_routing_affinity("slack", "U1", "coder")
+            .set_routing_affinity("slack", "C1", "U1", "coder")
             .expect("set");
         store
-            .set_routing_affinity("telegram", "U1", "reviewer")
+            .set_routing_affinity("slack", "C2", "U1", "reviewer")
             .expect("set");
 
         assert_eq!(
             store
-                .get_routing_affinity("slack", "U1")
+                .get_routing_affinity("slack", "C1", "U1")
                 .expect("get")
                 .as_deref(),
             Some("coder")
         );
         assert_eq!(
             store
-                .get_routing_affinity("telegram", "U1")
+                .get_routing_affinity("slack", "C2", "U1")
                 .expect("get")
                 .as_deref(),
             Some("reviewer")
         );
         assert!(store
-            .get_routing_affinity("discord", "U1")
+            .get_routing_affinity("discord", "C1", "U1")
             .expect("get")
             .is_none());
     }
@@ -1872,13 +1874,12 @@ mod tests {
         {
             let store = StateStore::new(&path).expect("store");
             store
-                .set_routing_affinity("slack", "U1", "coder")
+                .set_routing_affinity("slack", "D1", "U1", "coder")
                 .expect("set");
         }
-        // Reopen store from same file
         let store = StateStore::new(&path).expect("reopen");
         let agent = store
-            .get_routing_affinity("slack", "U1")
+            .get_routing_affinity("slack", "D1", "U1")
             .expect("get")
             .expect("exists");
         assert_eq!(agent, "coder");
