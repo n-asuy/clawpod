@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result};
 use config::{evaluate_ingress_policy, DiscordConfig, IngressDecision, RuntimeConfig};
@@ -12,14 +12,55 @@ use queue::{
 };
 use serenity::all::{
     ChannelId, ChannelType, CreateAllowedMentions, CreateAttachment, CreateMessage, GatewayIntents,
-    Http, Message, MessageId, Ready,
+    Http, Message, MessageId, Ready, ReactionType,
 };
 use serenity::async_trait;
 use serenity::client::{Client, Context, EventHandler};
 use store::{SenderAccessRegistration, StateStore, VerifyResult};
 use tokio::fs;
+use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
+
+const ACK_REACTIONS: &[&str] = &["⚡", "🦀", "🙌", "💪", "👌", "👀", "👣"];
+
+fn pick_ack_reaction(seed: u64) -> &'static str {
+    ACK_REACTIONS[seed as usize % ACK_REACTIONS.len()]
+}
+
+struct DiscordLiveState {
+    typing_handles: Mutex<HashMap<String, JoinHandle<()>>>,
+}
+
+impl DiscordLiveState {
+    fn new() -> Self {
+        Self {
+            typing_handles: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn start_typing(&self, channel_id: ChannelId, http: Arc<Http>) {
+        let key = channel_id.to_string();
+        let mut handles = self.typing_handles.lock().unwrap();
+        if let Some(old) = handles.remove(&key) {
+            old.abort();
+        }
+        let handle = tokio::spawn(async move {
+            loop {
+                let _ = channel_id.broadcast_typing(&*http).await;
+                tokio::time::sleep(Duration::from_secs(8)).await;
+            }
+        });
+        handles.insert(key, handle);
+    }
+
+    fn stop_typing(&self, channel_key: &str) {
+        let mut handles = self.typing_handles.lock().unwrap();
+        if let Some(handle) = handles.remove(channel_key) {
+            handle.abort();
+        }
+    }
+}
 
 pub async fn run(config: RuntimeConfig) -> Result<()> {
     let Some(channel) = config.channels.discord.clone() else {
@@ -38,19 +79,22 @@ pub async fn run(config: RuntimeConfig) -> Result<()> {
         | GatewayIntents::MESSAGE_CONTENT;
     let store =
         StateStore::new(config.state_path()).context("failed to initialize discord state store")?;
+    let live = Arc::new(DiscordLiveState::new());
     let mut client = Client::builder(token, intents)
         .event_handler(Handler {
             config: config.clone(),
             channel,
             store,
+            live: Arc::clone(&live),
         })
         .await
         .context("failed to build discord client")?;
     let http = client.http.clone();
     let outgoing_config = config.clone();
+    let outgoing_live = Arc::clone(&live);
     tokio::spawn(async move {
         mark_component_ok("discord_outgoing");
-        if let Err(err) = outgoing_loop(outgoing_config, http).await {
+        if let Err(err) = outgoing_loop(outgoing_config, http, outgoing_live).await {
             mark_component_error("discord_outgoing", err.to_string());
             error!("discord outgoing loop failed: {err:#}");
         }
@@ -68,6 +112,7 @@ struct Handler {
     config: RuntimeConfig,
     channel: DiscordConfig,
     store: StateStore,
+    live: Arc<DiscordLiveState>,
 }
 
 #[async_trait]
@@ -79,7 +124,8 @@ impl EventHandler for Handler {
 
     async fn message(&self, ctx: Context, message: Message) {
         if let Err(err) =
-            handle_message(&ctx, &self.config, &self.channel, &self.store, message).await
+            handle_message(&ctx, &self.config, &self.channel, &self.store, &self.live, message)
+                .await
         {
             error!("discord inbound handling failed: {err:#}");
         }
@@ -91,6 +137,7 @@ async fn handle_message(
     config: &RuntimeConfig,
     channel: &DiscordConfig,
     store: &StateStore,
+    live: &DiscordLiveState,
     message: Message,
 ) -> Result<()> {
     if message.author.bot {
@@ -224,6 +271,9 @@ async fn handle_message(
         text
     };
 
+    let channel_id = message.channel_id;
+    let msg_id = message.id;
+
     enqueue_message(
         config,
         EnqueueMessage {
@@ -231,10 +281,10 @@ async fn handle_message(
             sender: message.author.name.clone(),
             sender_id,
             message: text,
-            message_id: format!("discord_{}", message.id),
+            message_id: format!("discord_{}", msg_id),
             timestamp_ms: message.timestamp.unix_timestamp() * 1000,
             chat_type,
-            peer_id: message.channel_id.to_string(),
+            peer_id: channel_id.to_string(),
             account_id: message.guild_id.map(|id| id.to_string()),
             pre_routed_agent: None,
             from_agent: None,
@@ -243,6 +293,17 @@ async fn handle_message(
         },
     )
     .await?;
+
+    // Start typing indicator (loops every 8s until stopped by outgoing send)
+    live.start_typing(channel_id, ctx.http.clone());
+
+    // Add random ACK reaction to acknowledge receipt
+    let emoji_str = pick_ack_reaction(msg_id.get());
+    let emoji = ReactionType::Unicode(emoji_str.to_string());
+    let http = ctx.http.clone();
+    tokio::spawn(async move {
+        let _ = http.create_reaction(channel_id, msg_id, &emoji).await;
+    });
 
     Ok(())
 }
@@ -270,12 +331,19 @@ async fn enqueue_pairing_response(
     Ok(())
 }
 
-async fn outgoing_loop(config: RuntimeConfig, http: Arc<Http>) -> Result<()> {
+async fn outgoing_loop(
+    config: RuntimeConfig,
+    http: Arc<Http>,
+    live: Arc<DiscordLiveState>,
+) -> Result<()> {
     loop {
         let messages = list_outgoing_messages(&config, "discord").await?;
         for message in messages {
             match send_outgoing(&http, &message).await {
-                Ok(()) => ack_outgoing_message(&message.path).await?,
+                Ok(()) => {
+                    ack_outgoing_message(&message.path).await?;
+                    live.stop_typing(&message.recipient_id);
+                }
                 Err(err) => {
                     warn!(path = %message.path.display(), "discord send failed: {err:#}");
                 }
