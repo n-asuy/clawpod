@@ -280,6 +280,21 @@ fn selective_link_dir(
     shared_subdirs: &[&str],
 ) -> Result<()> {
     let session_target = session_dir.join(dir_name);
+
+    // Remove stale symlink from old layout (whole-dir symlink) before creating
+    // a real directory with selective sub-symlinks.
+    if fs::symlink_metadata(&session_target)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        fs::remove_file(&session_target).with_context(|| {
+            format!(
+                "failed to remove stale symlink: {}",
+                session_target.display()
+            )
+        })?;
+    }
+
     fs::create_dir_all(&session_target)
         .with_context(|| format!("failed to create {} dir: {}", dir_name, session_target.display()))?;
 
