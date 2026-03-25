@@ -572,7 +572,14 @@ impl QueueProcessor {
                 .await?;
 
                 // Fire-and-forget memory consolidation via background CLI call.
-                if agent::consolidation::should_consolidate(&event.text, &event.channel) {
+                let should = agent::consolidation::should_consolidate(&event.text, &event.channel);
+                tracing::info!(
+                    should_consolidate = should,
+                    channel = %event.channel,
+                    msg_chars = event.text.chars().count(),
+                    "memory consolidation check"
+                );
+                if should {
                     let user_msg = event.text.clone();
                     let assistant_resp = text.clone();
                     let memory_dir = session_dir.join("memory");
@@ -580,17 +587,22 @@ impl QueueProcessor {
                         .agent_or_err(&agent_id)
                         .map(|a| a.provider)
                         .unwrap_or_default();
+                    tracing::info!(
+                        provider = ?provider,
+                        memory_dir = %memory_dir.display(),
+                        "starting memory consolidation"
+                    );
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            agent::consolidation::consolidate_turn(
-                                &user_msg,
-                                &assistant_resp,
-                                &memory_dir,
-                                provider,
-                            )
-                            .await
+                        match agent::consolidation::consolidate_turn(
+                            &user_msg,
+                            &assistant_resp,
+                            &memory_dir,
+                            provider,
+                        )
+                        .await
                         {
-                            tracing::warn!("memory consolidation failed: {e}");
+                            Ok(()) => tracing::info!("memory consolidation succeeded"),
+                            Err(e) => tracing::warn!("memory consolidation failed: {e}"),
                         }
                     });
                 }
