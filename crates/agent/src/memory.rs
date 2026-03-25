@@ -209,12 +209,12 @@ impl PromptSection for MemorySection {
         );
 
         if tree.is_empty() {
-            out.push_str("No memories yet.\n");
+            out.push_str("No memories yet. Use the **memory** skill to start building your memory.\n");
         } else {
             out.push_str(&tree);
             let _ = writeln!(
                 out,
-                "\n\nTo read a memory in detail, read the file at `memory/<path>`."
+                "\n\nTo read a memory in detail, read the file at `memory/<path>`. Use the **memory** skill to create, update, or reorganize memories."
             );
         }
 
@@ -464,6 +464,7 @@ mod tests {
         assert!(output.contains("**goals**"));
         assert!(output.contains("Sprint goals"));
         assert!(output.contains("read the file at `memory/<path>`"));
+        assert!(output.contains("**memory** skill"));
     }
 
     #[test]
@@ -476,5 +477,6 @@ mod tests {
 
         assert!(output.contains("## Memory"));
         assert!(output.contains("No memories yet."));
+        assert!(output.contains("**memory** skill"));
     }
 }

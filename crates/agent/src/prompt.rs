@@ -1035,6 +1035,45 @@ mod tests {
         assert!(reflections.contains("# Reflections"));
         assert!(reflections.contains("## Open Questions"));
         assert!(reflections.contains("## Next Cycle Seeds"));
+
+        // Memory skill
+        let skill = root
+            .join(".agents")
+            .join("skills")
+            .join("memory")
+            .join("SKILL.md");
+        assert!(skill.exists());
+        let content = fs::read_to_string(&skill).unwrap();
+        assert!(content.contains("name: memory"));
+        assert!(content.contains("## Memory File Format"));
+
+        // .claude/skills symlink
+        let claude_skills = root.join(".claude").join("skills");
+        assert!(claude_skills.exists());
+        assert!(claude_skills.join("memory").join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn memory_skill_not_overwritten_on_rebootstrap() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut agents = HashMap::new();
+        agents.insert("bot".to_string(), make_agent("Bot", "sonnet"));
+        let teams = HashMap::new();
+
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+
+        let skill = root
+            .join(".agents")
+            .join("skills")
+            .join("memory")
+            .join("SKILL.md");
+        fs::write(&skill, "custom content").unwrap();
+
+        crate::ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+
+        let content = fs::read_to_string(&skill).unwrap();
+        assert_eq!(content, "custom content");
     }
 
     // -- HeartbeatSection --

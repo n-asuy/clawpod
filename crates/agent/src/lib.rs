@@ -157,6 +157,107 @@ Entry format:
 -->
 "#;
 
+const MEMORY_SKILL_TEMPLATE: &str = r#"---
+name: memory
+description: "Manage your persistent hierarchical memory — save, update, search, and organize knowledge as markdown files in the memory/ folder. Use when: you learn something worth remembering, the user asks you to remember something, you want to recall past knowledge, you need to reorganize or update existing memories, or you want to search through your memories. Triggers: 'remember this', 'save to memory', 'what do you remember about', 'update memory', 'search memory', 'forget', or when you decide something is worth persisting."
+---
+
+# Memory
+
+Manage your persistent hierarchical memory system. Memories are stored as markdown files in the `memory/` folder in your workspace, organized into a folder hierarchy that acts as categories/groups.
+
+## Memory Structure
+
+```
+memory/
+├── project-setup.md              ← root-level memory
+├── preferences/                  ← category folder
+│   ├── coding-style.md
+│   └── communication.md
+├── projects/                     ← category folder
+│   ├── overview.md
+│   └── webapp/
+│       ├── architecture.md
+│       └── api-endpoints.md
+└── people/
+    └── team-contacts.md
+```
+
+## Memory File Format
+
+Every memory file MUST have YAML frontmatter with `name` and `summary` fields:
+
+```markdown
+---
+name: coding-style
+summary: User prefers functional style, TypeScript strict mode, no semicolons
+---
+
+Detailed notes about the user's coding preferences:
+
+- Functional programming style over OOP
+- TypeScript with strict mode enabled
+- No semicolons (relies on ASI)
+```
+
+- **name**: Same as the filename (without .md extension). Acts as the memory identifier.
+- **summary**: A short one-line summary of what this memory contains. This is what appears in the memory index — make it informative enough to decide whether to read the full file.
+- **Body**: The detailed memory content after the frontmatter. Can be as long as needed.
+
+## Saving a Memory
+
+1. Decide which category folder it belongs in (or root `memory/` if it's top-level)
+2. Create the category folder if it doesn't exist: `mkdir -p memory/<category>`
+3. Write the `.md` file with proper frontmatter
+
+## Updating a Memory
+
+Read the existing file, modify its content, and write it back. Update the `summary` in frontmatter if the core meaning changed.
+
+## Searching Memories
+
+Search through memory content using grep:
+
+```bash
+grep -r "keyword" memory/ --include="*.md"
+```
+
+## Reading a Memory in Detail
+
+The memory index in your system prompt only shows name + summary. To read the full content:
+
+```bash
+cat memory/<path-to-file>.md
+```
+
+## Reorganizing Memory
+
+You can move, rename, or restructure the hierarchy at any time:
+
+```bash
+mkdir -p memory/new-category
+mv memory/old-location/file.md memory/new-category/file.md
+```
+
+When reorganizing, ensure the `name` field in frontmatter matches the new filename.
+
+## Deleting a Memory
+
+```bash
+rm memory/path/to/memory.md
+rmdir memory/empty-category/
+```
+
+## Guidelines
+
+- **Save proactively**: When you learn user preferences, project details, important decisions, or anything that would be useful across conversations — save it.
+- **Keep summaries concise**: The summary appears in the index that's loaded every conversation. Make it count.
+- **Use hierarchy wisely**: Group related memories into folders. Don't create too many levels of nesting (2-3 levels max).
+- **Update over create**: If a memory already exists on the topic, update it rather than creating a duplicate.
+- **Merge when appropriate**: If you notice related memories scattered around, consolidate them.
+- **Prune stale memories**: Remove or update memories that are no longer accurate.
+"#;
+
 const HEARTBEAT_TEMPLATE: &str = r#"# Heartbeat
 
 <!--
@@ -232,6 +333,40 @@ pub fn ensure_agent_workspace(
                 curiosity.display()
             )
         })?;
+    }
+
+    // Memory skill — enables agent-driven memory writes during conversation.
+    let skills_dir = root.join(".agents").join("skills").join("memory");
+    fs::create_dir_all(&skills_dir)
+        .with_context(|| format!("failed to create skills dir: {}", skills_dir.display()))?;
+    let skill_md = skills_dir.join("SKILL.md");
+    if !skill_md.exists() {
+        fs::write(&skill_md, MEMORY_SKILL_TEMPLATE)
+            .with_context(|| format!("failed to write SKILL.md: {}", skill_md.display()))?;
+    }
+
+    // Symlink .claude/skills -> ../.agents/skills so Claude Code discovers skills.
+    let claude_skills = root.join(".claude").join("skills");
+    if !claude_skills.exists() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs as unix_fs;
+            // Relative symlink so it works inside session symlink chains.
+            unix_fs::symlink("../.agents/skills", &claude_skills).with_context(|| {
+                format!(
+                    "failed to symlink .claude/skills: {}",
+                    claude_skills.display()
+                )
+            })?;
+        }
+        #[cfg(not(unix))]
+        {
+            // On non-Unix, copy the skills directory instead.
+            let source = root.join(".agents").join("skills");
+            if source.exists() {
+                copy_dir_all(&source, &claude_skills)?;
+            }
+        }
     }
 
     Ok(())
