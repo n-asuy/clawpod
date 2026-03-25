@@ -590,7 +590,7 @@ impl QueueProcessor {
                             )
                             .await
                         {
-                            tracing::debug!("memory consolidation skipped: {e}");
+                            tracing::warn!("memory consolidation failed: {e}");
                         }
                     });
                 }
