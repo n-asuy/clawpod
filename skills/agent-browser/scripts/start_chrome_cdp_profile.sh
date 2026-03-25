@@ -138,7 +138,7 @@ require_cmd curl
 # Extra Chrome flags for Linux / running as root
 EXTRA_CHROME_FLAGS=()
 if [[ "$(uname -s)" == "Linux" ]]; then
-  EXTRA_CHROME_FLAGS+=(--disable-dev-shm-usage)
+  EXTRA_CHROME_FLAGS+=(--disable-dev-shm-usage --disable-gpu)
   if [[ "$(id -u)" == "0" ]]; then
     EXTRA_CHROME_FLAGS+=(--no-sandbox)
   fi
