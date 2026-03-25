@@ -290,19 +290,26 @@ fn link_or_copy(src: PathBuf, dst: PathBuf) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs as unix_fs;
-        let src = if src.is_absolute() {
+        let abs_src = if src.is_absolute() {
             src
         } else {
             std::env::current_dir()
                 .context("failed to resolve current dir for symlink")?
                 .join(src)
         };
-        fs::symlink_metadata(&src)
-            .with_context(|| format!("failed to stat source path: {}", src.display()))?;
-        if let Err(err) = unix_fs::symlink(&src, &dst) {
+        fs::symlink_metadata(&abs_src)
+            .with_context(|| format!("failed to stat source path: {}", abs_src.display()))?;
+
+        // Use relative symlink so links survive workspace moves / user changes.
+        let link_target = match dst.parent() {
+            Some(dst_parent) => relative_path(dst_parent, &abs_src),
+            None => abs_src,
+        };
+
+        if let Err(err) = unix_fs::symlink(&link_target, &dst) {
             if err.kind() != std::io::ErrorKind::AlreadyExists {
                 return Err(err).with_context(|| {
-                    format!("failed to symlink {} -> {}", dst.display(), src.display())
+                    format!("failed to symlink {} -> {}", dst.display(), link_target.display())
                 });
             }
         }
@@ -322,6 +329,31 @@ fn link_or_copy(src: PathBuf, dst: PathBuf) -> Result<()> {
         }
         Ok(())
     }
+}
+
+/// Compute a relative path from `base` to `target`.
+///
+/// Both paths must be absolute. Returns a `PathBuf` like `../../memory`
+/// that, when resolved from `base`, reaches `target`.
+fn relative_path(base: &Path, target: &Path) -> PathBuf {
+    let base_parts: Vec<_> = base.components().collect();
+    let target_parts: Vec<_> = target.components().collect();
+
+    // Find common prefix length.
+    let common = base_parts
+        .iter()
+        .zip(target_parts.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut rel = PathBuf::new();
+    for _ in common..base_parts.len() {
+        rel.push("..");
+    }
+    for part in &target_parts[common..] {
+        rel.push(part);
+    }
+    rel
 }
 
 #[cfg(not(unix))]
@@ -346,4 +378,82 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_path_sibling() {
+        let base = Path::new("/a/b/c");
+        let target = Path::new("/a/b/d");
+        assert_eq!(relative_path(base, target), PathBuf::from("../d"));
+    }
+
+    #[test]
+    fn relative_path_parent() {
+        let base = Path::new("/a/b/sessions/key");
+        let target = Path::new("/a/b/memory");
+        assert_eq!(
+            relative_path(base, target),
+            PathBuf::from("../../memory")
+        );
+    }
+
+    #[test]
+    fn relative_path_same_dir() {
+        let base = Path::new("/a/b");
+        let target = Path::new("/a/b/file.md");
+        assert_eq!(relative_path(base, target), PathBuf::from("file.md"));
+    }
+
+    #[test]
+    fn relative_path_deeply_nested() {
+        let base = Path::new("/a/b/c/d");
+        let target = Path::new("/a/x/y");
+        assert_eq!(
+            relative_path(base, target),
+            PathBuf::from("../../../x/y")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_symlinks_are_relative() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut agents = HashMap::new();
+        agents.insert(
+            "bot".to_string(),
+            AgentConfig {
+                name: "Bot".into(),
+                provider: domain::ProviderKind::Anthropic,
+                model: "sonnet".into(),
+                think_level: None,
+                provider_id: None,
+                system_prompt: None,
+                prompt_file: None,
+                heartbeat: None,
+            },
+        );
+        let teams = HashMap::new();
+
+        ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+        let session_dir = ensure_session_workspace(root, "test:session").unwrap();
+
+        // memory symlink should be relative
+        let memory_link = session_dir.join("memory");
+        let link_target = fs::read_link(&memory_link).unwrap();
+        assert!(
+            link_target.is_relative(),
+            "memory symlink should be relative, got: {}",
+            link_target.display()
+        );
+        // And it should resolve correctly
+        assert!(
+            fs::metadata(&memory_link).is_ok(),
+            "relative symlink should resolve to existing directory"
+        );
+    }
 }
