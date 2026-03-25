@@ -133,9 +133,6 @@ const EDITABLE_FILES: &[(&str, &str)] = &[
     (".clawpod", "SOUL.md"),
     ("", "AGENTS.md"),
     ("", "heartbeat.md"),
-    ("", "focus.md"),
-    ("memory", "reflections.md"),
-    ("memory", "curiosity_journal.md"),
 ];
 
 pub async fn run(

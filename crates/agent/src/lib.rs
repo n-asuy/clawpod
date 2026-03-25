@@ -105,59 +105,6 @@ QUALITY CHECK:
 -->
 "#;
 
-const FOCUS_TEMPLATE: &str = r#"# Focus
-
-<!--
-Your working memory. Track what you're actively doing.
-Use checkbox format:
-- [ ] pending
-- [/] in progress
-- [x] completed
-
-Archive completed items periodically to keep this file current.
--->
-"#;
-
-const REFLECTIONS_TEMPLATE: &str = r#"# Reflections
-
-<!--
-Your autonomous thinking journal. Updated during heartbeat runs.
--->
-
-## Open Questions
-<!-- Questions you're curious about, related to your role and recent work. -->
-
-## Hypotheses
-<!-- Ideas to test. Mark: verified, disproven, or in progress. -->
-
-## Insights
-<!-- Verified findings worth remembering. Include sources where applicable. -->
-
-## Next Cycle Seeds
-<!-- What to explore in your next heartbeat. -->
-"#;
-
-const CURIOSITY_JOURNAL_TEMPLATE: &str = r#"# Curiosity Journal
-
-<!--
-Your exploration log. Record interesting discoveries here.
--->
-
-## Active Questions
-<!-- Topics you want to investigate in future heartbeats. -->
-
-## Discoveries
-<!-- Record your findings below, newest first.
-
-Entry format:
-### [Date] - [Topic]
-- **Finding**: What you learned
-- **Source**: URL or reference
-- **Relevance**: high/medium/low — Why it matters
-- **Follow-up**: Questions this raises for next time
--->
-"#;
-
 const HEARTBEAT_TEMPLATE: &str = r#"# Heartbeat
 
 <!--
@@ -212,29 +159,6 @@ pub fn ensure_agent_workspace(
             .with_context(|| format!("failed to write heartbeat.md: {}", heartbeat.display()))?;
     }
 
-    let focus = root.join("focus.md");
-    if !focus.exists() {
-        fs::write(&focus, FOCUS_TEMPLATE)
-            .with_context(|| format!("failed to write focus.md: {}", focus.display()))?;
-    }
-
-    let reflections = root.join("memory").join("reflections.md");
-    if !reflections.exists() {
-        fs::write(&reflections, REFLECTIONS_TEMPLATE).with_context(|| {
-            format!("failed to write reflections.md: {}", reflections.display())
-        })?;
-    }
-
-    let curiosity = root.join("memory").join("curiosity_journal.md");
-    if !curiosity.exists() {
-        fs::write(&curiosity, CURIOSITY_JOURNAL_TEMPLATE).with_context(|| {
-            format!(
-                "failed to write curiosity_journal.md: {}",
-                curiosity.display()
-            )
-        })?;
-    }
-
     Ok(())
 }
 
@@ -266,7 +190,6 @@ pub fn ensure_session_workspace(agent_root: &Path, session_key: &str) -> Result<
     selective_link_dir(agent_root, &session_dir, ".agents", SHARED_AGENTS_SUBDIRS)?;
 
     link_or_copy(agent_root.join("memory"), session_dir.join("memory"))?;
-    link_or_copy(agent_root.join("focus.md"), session_dir.join("focus.md"))?;
 
     Ok(session_dir)
 }

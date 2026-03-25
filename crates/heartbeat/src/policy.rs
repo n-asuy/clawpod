@@ -6,12 +6,9 @@ use domain::{AgentHeartbeatConfig, HeartbeatDirectPolicy, HeartbeatTarget, Activ
 
 /// Default heartbeat prompt used when no explicit override is configured.
 pub const DEFAULT_HEARTBEAT_PROMPT: &str = "\
-1. Read `memory/reflections.md` for your open questions and hypotheses.\n\
-2. Review `focus.md` for your current tasks — update status if anything changed.\n\
-3. If you have new insights, record them in `memory/reflections.md` under Insights.\n\
-4. Seed `memory/reflections.md` > Next Cycle Seeds with topics for your next heartbeat.\n\
-5. If anything needs the user's attention, report it clearly.\n\
-6. If nothing needs attention, reply HEARTBEAT_OK.";
+1. Review your current context and any pending work.\n\
+2. If anything needs the user's attention, report it clearly.\n\
+3. If nothing needs attention, reply HEARTBEAT_OK.";
 
 const DEFAULT_EVERY: &str = "30m";
 const DEFAULT_ACK_MAX_CHARS: usize = 300;
