@@ -18,15 +18,18 @@ const MAX_TURN_CHARS: usize = 4000;
 /// Timeout for the consolidation CLI process.
 const CONSOLIDATION_TIMEOUT: Duration = Duration::from_secs(30);
 
-const CONSOLIDATION_PROMPT: &str = r#"You are a memory consolidation engine. Given a conversation turn between a user and an assistant, extract:
+const CONSOLIDATION_PROMPT_PREFIX: &str = r#"You are a memory consolidation engine. Given a conversation turn between a user and an assistant, extract:
 
 1. "memory_update": Any NEW facts, preferences, decisions, or commitments worth remembering long-term. Return null if nothing new was learned. Be selective — only extract information that would be valuable in future conversations.
 
+IMPORTANT: If the fact is already recorded in the existing memories below, return null. Do NOT create duplicate entries.
+
 Respond ONLY with valid JSON: {"memory_update": "..." or null}
 Do not include any text outside the JSON object.
-
-Conversation turn:
 "#;
+
+/// Maximum chars of existing memory to include in the consolidation prompt.
+const MAX_EXISTING_MEMORY_CHARS: usize = 2000;
 
 #[derive(Debug, Deserialize)]
 struct ConsolidationResult {
@@ -54,7 +57,15 @@ pub async fn consolidate_turn(
 ) -> Result<()> {
     let turn_text = format!("User: {user_message}\nAssistant: {assistant_response}");
     let truncated = truncate_at_char_boundary(&turn_text, MAX_TURN_CHARS);
-    let full_prompt = format!("{CONSOLIDATION_PROMPT}{truncated}");
+
+    let existing_memory = load_existing_memory(memory_dir);
+    let full_prompt = if existing_memory.is_empty() {
+        format!("{CONSOLIDATION_PROMPT_PREFIX}\nConversation turn:\n{truncated}")
+    } else {
+        format!(
+            "{CONSOLIDATION_PROMPT_PREFIX}\nExisting memories:\n{existing_memory}\n\nConversation turn:\n{truncated}"
+        )
+    };
 
     let output = match provider {
         ProviderKind::Openai => {
@@ -163,6 +174,32 @@ fn parse_consolidation_response(raw: &str) -> ConsolidationResult {
     serde_json::from_str(cleaned).unwrap_or(ConsolidationResult {
         memory_update: None,
     })
+}
+
+/// Load existing memory entries from daily.md for deduplication.
+/// Returns a truncated string of existing entries, or empty string if none.
+fn load_existing_memory(memory_dir: &Path) -> String {
+    let daily_path = memory_dir.join("daily.md");
+    let content = match std::fs::read_to_string(&daily_path) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    // Extract only the entry lines (skip frontmatter and headings)
+    let entries: Vec<&str> = content
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with("---")
+                && !trimmed.starts_with('#')
+                && !trimmed.starts_with("name:")
+                && !trimmed.starts_with("summary:")
+        })
+        .collect();
+
+    let joined = entries.join("\n");
+    truncate_at_char_boundary(&joined, MAX_EXISTING_MEMORY_CHARS).to_string()
 }
 
 /// Append a memory update to `memory/daily.md`, creating it with frontmatter
@@ -308,5 +345,29 @@ mod tests {
         let content = std::fs::read_to_string(memory_dir.join("daily.md")).unwrap();
         assert!(content.contains("First fact"));
         assert!(content.contains("Second fact"));
+    }
+
+    #[test]
+    fn load_existing_memory_returns_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory_dir = dir.path();
+        std::fs::create_dir_all(memory_dir).unwrap();
+
+        append_daily_memory(memory_dir, "User prefers Rust").unwrap();
+        append_daily_memory(memory_dir, "User works on ClawPod").unwrap();
+
+        let existing = load_existing_memory(memory_dir);
+        assert!(existing.contains("User prefers Rust"));
+        assert!(existing.contains("User works on ClawPod"));
+        // Should not contain frontmatter or headings
+        assert!(!existing.contains("name: daily"));
+        assert!(!existing.contains("# Daily"));
+    }
+
+    #[test]
+    fn load_existing_memory_empty_when_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = load_existing_memory(dir.path());
+        assert!(existing.is_empty());
     }
 }
