@@ -383,7 +383,7 @@ async fn send_outgoing(http: &Http, message: &queue::QueuedOutgoingMessage) -> R
     );
 
     let chunks = if message.message.trim().is_empty() {
-        vec![""]
+        vec![String::new()]
     } else {
         split_message_chunks(&message.message, DISCORD_MAX_CONTENT_LEN)
     };
@@ -392,7 +392,7 @@ async fn send_outgoing(http: &Http, message: &queue::QueuedOutgoingMessage) -> R
         let mut builder = if chunk.is_empty() {
             CreateMessage::new()
         } else {
-            CreateMessage::new().content(chunk.to_string())
+            CreateMessage::new().content(chunk.clone())
         };
 
         if i == 0 {
@@ -428,18 +428,34 @@ async fn send_outgoing(http: &Http, message: &queue::QueuedOutgoingMessage) -> R
             .send_message(http, builder)
             .await
             .context("failed to send discord message")?;
+
+        // Delay between chunks to avoid Discord rate limits (cf. ZeroClaw)
+        if i < chunks.len() - 1 {
+            sleep(Duration::from_millis(500)).await;
+        }
     }
 
     Ok(())
 }
 
-/// Split text into chunks that fit within Discord's character limit.
-/// Tries to break at newlines, then spaces, then forces a hard break.
-fn split_message_chunks(text: &str, max_chars: usize) -> Vec<&str> {
+/// Maximum overhead for closing + reopening a fenced code block across chunks.
+const FENCE_OVERHEAD: usize = 30;
+
+/// Split text into chunks that fit within Discord's character limit,
+/// preserving fenced code blocks across chunk boundaries.
+fn split_message_chunks(text: &str, max_chars: usize) -> Vec<String> {
     if text.chars().count() <= max_chars {
-        return vec![text];
+        return vec![text.to_string()];
     }
 
+    // Reserve space for code fence close/reopen markers
+    let effective_limit = max_chars.saturating_sub(FENCE_OVERHEAD);
+    let raw = split_at_boundaries(text, effective_limit);
+    balance_code_fences(&raw)
+}
+
+/// Low-level splitter: breaks text at newline > space > hard boundaries.
+fn split_at_boundaries(text: &str, max_chars: usize) -> Vec<&str> {
     let mut chunks = Vec::new();
     let mut start = 0;
 
@@ -457,8 +473,16 @@ fn split_message_chunks(text: &str, max_chars: usize) -> Vec<&str> {
             .unwrap_or(remaining.len());
 
         let search = &remaining[..end_byte];
+        let half_byte = remaining
+            .char_indices()
+            .nth(max_chars / 2)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        // Prefer newline, but only if it's in the latter half (cf. ZeroClaw)
         let split_byte = search
             .rfind('\n')
+            .filter(|&pos| pos >= half_byte)
             .or_else(|| search.rfind(' '))
             .map(|pos| pos + 1)
             .unwrap_or(end_byte);
@@ -474,6 +498,77 @@ fn split_message_chunks(text: &str, max_chars: usize) -> Vec<&str> {
     }
 
     chunks
+}
+
+/// Post-process chunks to close and reopen fenced code blocks at boundaries.
+fn balance_code_fences(chunks: &[&str]) -> Vec<String> {
+    if chunks.len() <= 1 {
+        return chunks.iter().map(|c| c.to_string()).collect();
+    }
+
+    let mut result = Vec::with_capacity(chunks.len());
+    let mut open_fence: Option<String> = None;
+
+    for chunk in chunks {
+        let mut buf = String::new();
+
+        if let Some(ref fence_line) = open_fence {
+            buf.push_str(fence_line);
+            buf.push('\n');
+        }
+
+        buf.push_str(chunk);
+
+        // Determine fence state at the end of this chunk (including re-opened prefix)
+        open_fence = find_open_fence(&buf);
+
+        if open_fence.is_some() {
+            if !buf.ends_with('\n') {
+                buf.push('\n');
+            }
+            buf.push_str("```");
+        }
+
+        result.push(buf);
+    }
+
+    result
+}
+
+/// Returns the opening fence line (e.g. "```rust") if a code fence is unclosed
+/// at the end of the text.
+fn find_open_fence(text: &str) -> Option<String> {
+    let mut open: Option<(char, usize, String)> = None;
+
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let first = match trimmed.chars().next() {
+            Some(c @ '`') | Some(c @ '~') => c,
+            _ => continue,
+        };
+        let marker_len = trimmed.chars().take_while(|&c| c == first).count();
+        if marker_len < 3 {
+            continue;
+        }
+
+        if let Some((open_char, open_len, _)) = &open {
+            // Closing fence: same marker, >= length, no content after markers
+            if first == *open_char && marker_len >= *open_len {
+                let after_byte = trimmed
+                    .char_indices()
+                    .nth(marker_len)
+                    .map(|(i, _)| i)
+                    .unwrap_or(trimmed.len());
+                if trimmed[after_byte..].trim().is_empty() {
+                    open = None;
+                }
+            }
+        } else {
+            open = Some((first, marker_len, line.to_string()));
+        }
+    }
+
+    open.map(|(_, _, line)| line)
 }
 
 async fn download_attachments(config: &RuntimeConfig, message: &Message) -> Result<Vec<String>> {
@@ -537,8 +632,8 @@ fn parse_discord_message_id(raw: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_permanent_send_error, normalize_discord_text, parse_discord_message_id,
-        split_message_chunks,
+        find_open_fence, is_permanent_send_error, normalize_discord_text,
+        parse_discord_message_id, split_at_boundaries, split_message_chunks,
     };
 
     #[test]
@@ -566,28 +661,36 @@ mod tests {
         assert_eq!(parse_discord_message_id("telegram_987654321"), None);
     }
 
+    // ── split_at_boundaries (low-level) ──────────────────────────
+
     #[test]
     fn short_message_stays_single_chunk() {
         let text = "hello world";
-        let chunks = split_message_chunks(text, 2000);
+        let chunks = split_at_boundaries(text, 2000);
         assert_eq!(chunks, vec!["hello world"]);
     }
 
     #[test]
-    fn splits_at_newline_boundary() {
-        let line = "a".repeat(15);
-        let text = format!("{line}\n{line}\n{line}");
-        let chunks = split_message_chunks(&text, 20);
-        assert_eq!(chunks.len(), 3);
-        assert!(chunks.iter().all(|c| c.chars().count() <= 20));
-        let reassembled: String = chunks.concat();
-        assert_eq!(reassembled, text);
+    fn splits_at_newline_in_latter_half() {
+        // Newline in the latter half → split there
+        let text = format!("{}\n{}", "a".repeat(15), "b".repeat(10));
+        let chunks = split_at_boundaries(&text, 20);
+        assert!(chunks[0].ends_with('\n'));
+    }
+
+    #[test]
+    fn skips_newline_in_first_half() {
+        // Newline very early → falls back to space or hard break
+        let text = format!("ab\n{}", "c".repeat(25));
+        let chunks = split_at_boundaries(&text, 20);
+        // Should NOT split at the early newline (pos 2 < half of 20)
+        assert!(chunks[0].chars().count() > 3);
     }
 
     #[test]
     fn splits_at_space_when_no_newline() {
         let text = "aaaa bbbb cccc dddd";
-        let chunks = split_message_chunks(text, 10);
+        let chunks = split_at_boundaries(text, 10);
         assert!(chunks.iter().all(|c| c.chars().count() <= 10));
         let reassembled: String = chunks.concat();
         assert_eq!(reassembled, text);
@@ -596,21 +699,121 @@ mod tests {
     #[test]
     fn hard_breaks_when_no_delimiter() {
         let text = "a".repeat(30);
-        let chunks = split_message_chunks(&text, 10);
+        let chunks = split_at_boundaries(&text, 10);
         assert_eq!(chunks.len(), 3);
         assert!(chunks.iter().all(|c| c.chars().count() <= 10));
     }
 
     #[test]
     fn handles_multibyte_characters() {
-        // Japanese text: each char is 3 bytes in UTF-8
         let text = "あ".repeat(30);
-        let chunks = split_message_chunks(&text, 10);
+        let chunks = split_at_boundaries(&text, 10);
         assert_eq!(chunks.len(), 3);
         assert!(chunks.iter().all(|c| c.chars().count() <= 10));
         let reassembled: String = chunks.concat();
         assert_eq!(reassembled, text);
     }
+
+    #[test]
+    fn preserves_all_content() {
+        let original = "Hello world! This is a test. ".repeat(200);
+        let chunks = split_at_boundaries(&original, 2000);
+        let reassembled: String = chunks.concat();
+        assert_eq!(reassembled, original);
+    }
+
+    // ── split_message_chunks (with fence balancing) ──────────────
+
+    #[test]
+    fn short_message_no_split() {
+        let chunks = split_message_chunks("hello", 2000);
+        assert_eq!(chunks, vec!["hello"]);
+    }
+
+    #[test]
+    fn code_fence_closed_and_reopened_across_chunks() {
+        let mut text = String::from("```rust\n");
+        text.push_str(&"x".repeat(2000));
+        text.push_str("\n```\nafter");
+
+        let chunks = split_message_chunks(&text, 2000);
+        assert!(chunks.len() >= 2);
+
+        // First chunk should close the fence
+        assert!(
+            chunks[0].trim_end().ends_with("```"),
+            "first chunk must close fence"
+        );
+
+        // Second chunk should reopen it
+        assert!(
+            chunks[1].starts_with("```rust"),
+            "second chunk must reopen fence"
+        );
+    }
+
+    #[test]
+    fn closed_fence_not_reopened() {
+        let mut text = String::from("```\ncode\n```\n");
+        text.push_str(&"x".repeat(2000));
+
+        let chunks = split_message_chunks(&text, 2000);
+        assert!(chunks.len() >= 2);
+
+        // No fence open at boundary → second chunk should NOT start with ```
+        assert!(
+            !chunks[1].starts_with("```"),
+            "closed fence must not be reopened"
+        );
+    }
+
+    #[test]
+    fn tilde_fence_balanced() {
+        let mut text = String::from("~~~python\n");
+        text.push_str(&"y".repeat(2000));
+        text.push_str("\n~~~");
+
+        let chunks = split_message_chunks(&text, 2000);
+        assert!(chunks.len() >= 2);
+        assert!(chunks[0].trim_end().ends_with("```"));
+        assert!(chunks[1].starts_with("~~~python"));
+    }
+
+    #[test]
+    fn emoji_at_boundary_no_panic() {
+        let mut msg = "a".repeat(1998);
+        msg.push_str("🎉🎊");
+        let chunks = split_message_chunks(&msg, 2000);
+        for chunk in &chunks {
+            assert!(chunk.chars().count() <= 2000);
+        }
+    }
+
+    // ── find_open_fence ──────────────────────────────────────────
+
+    #[test]
+    fn detects_open_backtick_fence() {
+        assert!(find_open_fence("```rust\nlet x = 1;").is_some());
+    }
+
+    #[test]
+    fn detects_closed_fence() {
+        assert!(find_open_fence("```\ncode\n```").is_none());
+    }
+
+    #[test]
+    fn closing_fence_needs_matching_marker() {
+        // Opened with ```, closed with ~~~ → still open
+        assert!(find_open_fence("```\ncode\n~~~").is_some());
+    }
+
+    #[test]
+    fn closing_fence_ignores_content_after_markers() {
+        // ``` with content after is an opening fence, not closing
+        assert!(find_open_fence("```\ncode\n```not_a_close").is_some());
+    }
+
+    // ── permanent error detection ────────────────────────────────
 
     #[test]
     fn permanent_error_detection() {
