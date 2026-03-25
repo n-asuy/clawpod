@@ -237,6 +237,13 @@ pub fn ensure_agent_workspace(
     Ok(())
 }
 
+/// Subdirectories inside `.claude/` and `.agents/` that should be shared
+/// (symlinked) across sessions.  Everything else inside these directories is
+/// session-specific so that Claude Code's auto-memory and per-session state
+/// do not leak between conversations.
+const SHARED_CLAUDE_SUBDIRS: &[&str] = &["skills", "settings"];
+const SHARED_AGENTS_SUBDIRS: &[&str] = &["skills"];
+
 pub fn ensure_session_workspace(agent_root: &Path, session_key: &str) -> Result<PathBuf> {
     let session_dir = agent_root.join("sessions").join(slugify(session_key));
     fs::create_dir_all(&session_dir)
@@ -248,13 +255,40 @@ pub fn ensure_session_workspace(agent_root: &Path, session_key: &str) -> Result<
         session_dir.join("heartbeat.md"),
     )?;
     link_or_copy(agent_root.join(".clawpod"), session_dir.join(".clawpod"))?;
-    link_or_copy(agent_root.join(".claude"), session_dir.join(".claude"))?;
+
+    // .claude/ — create as a real directory, selectively symlink shared subdirs
+    selective_link_dir(agent_root, &session_dir, ".claude", SHARED_CLAUDE_SUBDIRS)?;
+
     link_or_copy(agent_root.join(".codex"), session_dir.join(".codex"))?;
-    link_or_copy(agent_root.join(".agents"), session_dir.join(".agents"))?;
+
+    // .agents/ — create as a real directory, selectively symlink shared subdirs
+    selective_link_dir(agent_root, &session_dir, ".agents", SHARED_AGENTS_SUBDIRS)?;
+
     link_or_copy(agent_root.join("memory"), session_dir.join("memory"))?;
     link_or_copy(agent_root.join("focus.md"), session_dir.join("focus.md"))?;
 
     Ok(session_dir)
+}
+
+/// Create `<session_dir>/<dir_name>/` as a real directory and symlink only
+/// the listed subdirectories from `<agent_root>/<dir_name>/<sub>`.
+fn selective_link_dir(
+    agent_root: &Path,
+    session_dir: &Path,
+    dir_name: &str,
+    shared_subdirs: &[&str],
+) -> Result<()> {
+    let session_target = session_dir.join(dir_name);
+    fs::create_dir_all(&session_target)
+        .with_context(|| format!("failed to create {} dir: {}", dir_name, session_target.display()))?;
+
+    for &sub in shared_subdirs {
+        let src = agent_root.join(dir_name).join(sub);
+        if src.exists() {
+            link_or_copy(src, session_target.join(sub))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn reset_agent_workspace(agent_root: &Path) -> Result<()> {
