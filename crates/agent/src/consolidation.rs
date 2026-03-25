@@ -5,7 +5,7 @@ use domain::ProviderKind;
 use serde::Deserialize;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
-use tracing::debug;
+use tracing::info;
 
 /// Minimum message length (in chars) to trigger consolidation.
 /// Short messages like "ok" or "thanks" rarely contain memorable facts.
@@ -118,16 +118,18 @@ pub async fn consolidate_turn(
 
     let result = parse_consolidation_response(&response_text);
 
+    info!(
+        has_update = result.memory_update.is_some(),
+        response = %response_text,
+        "memory consolidation result"
+    );
+
     if let Some(ref update) = result.memory_update {
         if !update.trim().is_empty() {
             append_daily_memory(memory_dir, update)?;
         }
     }
 
-    debug!(
-        has_update = result.memory_update.is_some(),
-        "memory consolidation complete"
-    );
     Ok(())
 }
 
