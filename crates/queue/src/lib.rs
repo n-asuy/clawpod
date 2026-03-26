@@ -126,7 +126,9 @@ pub struct QueueProcessor {
     store: StateStore,
     sink: FileEventSink,
     global_limit: Arc<Semaphore>,
-    session_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// Per-agent lock to serialize runs within the same agent, protecting
+    /// the shared `memory/` directory from concurrent writes across sessions.
+    agent_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl QueueProcessor {
@@ -142,7 +144,7 @@ impl QueueProcessor {
             runner,
             store,
             sink,
-            session_locks: Arc::new(Mutex::new(HashMap::new())),
+            agent_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -396,8 +398,11 @@ impl QueueProcessor {
         );
         let session_dir = ensure_session_workspace(&agent_root, &session_key)?;
 
-        let session_lock = self.session_lock(session_key.clone()).await;
-        let _session_guard = session_lock.lock().await;
+        // Agent-level lock serializes runs within the same agent, protecting
+        // the shared memory/ directory from concurrent writes across sessions.
+        // This subsumes the old session-level lock since it is strictly broader.
+        let agent_lock = self.agent_lock(agent_id.clone()).await;
+        let _agent_guard = agent_lock.lock().await;
         let _global_guard = self.global_limit.acquire().await?;
 
         let continue_session = self.store.session_exists(&session_key)?;
@@ -977,10 +982,10 @@ impl QueueProcessor {
             .ok_or_else(|| anyhow!("agent not found: {agent_id}"))
     }
 
-    async fn session_lock(&self, session_key: String) -> Arc<Mutex<()>> {
-        let mut locks = self.session_locks.lock().await;
+    async fn agent_lock(&self, agent_id: String) -> Arc<Mutex<()>> {
+        let mut locks = self.agent_locks.lock().await;
         locks
-            .entry(session_key)
+            .entry(agent_id)
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }

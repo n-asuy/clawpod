@@ -283,8 +283,23 @@ fn slugify(value: &str) -> String {
 }
 
 fn link_or_copy(src: PathBuf, dst: PathBuf) -> Result<()> {
-    if fs::symlink_metadata(&dst).is_ok() {
-        return Ok(());
+    // Check if dst already exists.  `symlink_metadata` succeeds even for
+    // broken (dangling) symlinks, so we additionally verify the target is
+    // reachable via `fs::metadata` which follows symlinks.
+    if let Ok(meta) = fs::symlink_metadata(&dst) {
+        if meta.file_type().is_symlink() {
+            if fs::metadata(&dst).is_err() {
+                // Dangling symlink — remove it so we can recreate below.
+                fs::remove_file(&dst).with_context(|| {
+                    format!("failed to remove dangling symlink: {}", dst.display())
+                })?;
+            } else {
+                return Ok(());
+            }
+        } else {
+            // Real file/dir already exists.
+            return Ok(());
+        }
     }
 
     #[cfg(unix)]
@@ -454,6 +469,107 @@ mod tests {
         assert!(
             fs::metadata(&memory_link).is_ok(),
             "relative symlink should resolve to existing directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn link_or_copy_repairs_dangling_symlink() {
+        use std::os::unix::fs as unix_fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Create a real source directory.
+        let src = root.join("real_dir");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("file.txt"), "hello").unwrap();
+
+        // Create a dangling symlink at dst pointing to a non-existent target.
+        let dst = root.join("link");
+        unix_fs::symlink("/nonexistent/path", &dst).unwrap();
+
+        // Verify the symlink is dangling.
+        assert!(fs::symlink_metadata(&dst).is_ok(), "symlink itself exists");
+        assert!(fs::metadata(&dst).is_err(), "target does not exist");
+
+        // link_or_copy should repair the dangling symlink.
+        link_or_copy(src.clone(), dst.clone()).unwrap();
+
+        // Now the symlink should resolve to the real source.
+        assert!(
+            fs::metadata(&dst).is_ok(),
+            "repaired symlink should resolve"
+        );
+        assert!(
+            fs::metadata(dst.join("file.txt")).is_ok(),
+            "contents should be accessible through repaired link"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn link_or_copy_skips_healthy_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        let src = root.join("src_dir");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), "aaa").unwrap();
+
+        let dst = root.join("dst_link");
+
+        // First call creates the symlink.
+        link_or_copy(src.clone(), dst.clone()).unwrap();
+        let original_target = fs::read_link(&dst).unwrap();
+
+        // Second call should be a no-op (not recreate).
+        link_or_copy(src, dst.clone()).unwrap();
+        let target_after = fs::read_link(&dst).unwrap();
+
+        assert_eq!(original_target, target_after);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_session_workspace_repairs_dangling_memory_link() {
+        use std::os::unix::fs as unix_fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut agents = HashMap::new();
+        agents.insert(
+            "bot".to_string(),
+            AgentConfig {
+                name: "Bot".into(),
+                provider: domain::ProviderKind::Anthropic,
+                model: "sonnet".into(),
+                think_level: None,
+                provider_id: None,
+                system_prompt: None,
+                prompt_file: None,
+                heartbeat: None,
+            },
+        );
+        let teams = HashMap::new();
+
+        ensure_agent_workspace("bot", &agents["bot"], &agents, &teams, root).unwrap();
+        let session_dir = ensure_session_workspace(root, "test:repair").unwrap();
+
+        // Break the memory symlink by replacing it with a dangling one.
+        let memory_link = session_dir.join("memory");
+        fs::remove_file(&memory_link).unwrap();
+        unix_fs::symlink("/nonexistent/memory", &memory_link).unwrap();
+        assert!(fs::metadata(&memory_link).is_err(), "link is now dangling");
+
+        // Re-running ensure_session_workspace should repair it.
+        let session_dir2 = ensure_session_workspace(root, "test:repair").unwrap();
+        assert_eq!(session_dir, session_dir2);
+
+        let repaired = session_dir2.join("memory");
+        assert!(
+            fs::metadata(&repaired).is_ok(),
+            "memory symlink should be repaired and resolve"
         );
     }
 }
