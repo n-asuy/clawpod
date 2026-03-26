@@ -17,7 +17,7 @@ use observer::{mark_component_error, mark_component_ok, snapshot_json, FileEvent
 use queue::{enqueue_chatroom_message, enqueue_outgoing_message, list_outgoing_messages};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use store::StateStore;
+use store::{RunEventBuffer, StateStore};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
@@ -40,6 +40,7 @@ struct AppState {
     sink: FileEventSink,
     heartbeat_service: Option<Arc<HeartbeatService>>,
     heartbeat_control: Option<HeartbeatLoopControl>,
+    run_events: Arc<RunEventBuffer>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +143,7 @@ pub async fn run(
     sink: FileEventSink,
     heartbeat_service: Option<Arc<HeartbeatService>>,
     heartbeat_control: Option<HeartbeatLoopControl>,
+    run_events: Arc<RunEventBuffer>,
 ) -> Result<()> {
     let bind_addr = config.server_listen_addr();
     let office_url = config.office_url();
@@ -152,6 +154,7 @@ pub async fn run(
         sink,
         heartbeat_service,
         heartbeat_control,
+        run_events,
     };
 
     let app = Router::new()
@@ -198,6 +201,9 @@ pub async fn run(
         )
         .route("/api/responses/pending", get(list_pending_responses))
         .route("/api/runs", get(list_runs))
+        .route("/api/runs/:run_id", get(get_run))
+        .route("/api/runs/:run_id/events", get(get_run_events))
+        .route("/api/events/run-stream", get(stream_run_events))
         .route("/api/sessions", get(list_sessions_api))
         .route("/api/logs/events", get(list_events))
         .route(
@@ -719,6 +725,45 @@ async fn list_runs(
         )
         .map_err(internal_error)?;
     Ok(Json(json!({ "runs": runs })))
+}
+
+async fn get_run(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let run = state
+        .store
+        .get_run(&run_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("run not found: {run_id}")))?;
+    Ok(Json(run))
+}
+
+async fn get_run_events(
+    State(state): State<AppState>,
+    AxumPath(run_id): AxumPath<String>,
+) -> ApiResult<Json<Value>> {
+    let events = state.run_events.get_events(&run_id);
+    Ok(Json(json!({
+        "run_id": run_id,
+        "events": events,
+    })))
+}
+
+async fn stream_run_events(
+    State(state): State<AppState>,
+) -> ApiResult<Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, Infallible>>>> {
+    let stream = BroadcastStream::new(state.run_events.subscribe()).map(|item| {
+        let event = match item {
+            Ok(run_event) => {
+                let data = serde_json::to_string(&run_event).unwrap_or_default();
+                Event::default().event("run_event").data(data)
+            }
+            Err(err) => Event::default().data(json!({ "error": err.to_string() }).to_string()),
+        };
+        Ok::<_, Infallible>(event)
+    });
+    Ok(Sse::new(stream))
 }
 
 async fn list_sessions_api(State(state): State<AppState>) -> ApiResult<Json<Value>> {

@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use config::{CustomProviderConfig, RuntimeConfig};
 use domain::{
     AgentConfig, ChatType, ChatroomPost, InboundEvent, OutboundEvent, ProviderHarness,
-    ProviderKind, RunRequest, RunStatus, Runner,
+    ProviderKind, RunEvent, RunRequest, RunStatus, Runner,
 };
 use observer::FileEventSink;
 use plugins::{dispatch_event, transform_incoming, transform_outgoing, HookContext};
@@ -24,7 +24,7 @@ use routing::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use session::build_session_key;
-use store::StateStore;
+use store::{RunEventBuffer, StateStore};
 use tokio::fs;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinSet;
@@ -125,6 +125,7 @@ pub struct QueueProcessor {
     runner: Arc<dyn Runner>,
     store: StateStore,
     sink: FileEventSink,
+    run_events: Arc<RunEventBuffer>,
     global_limit: Arc<Semaphore>,
     /// Per-agent lock to serialize runs within the same agent, protecting
     /// the shared `memory/` directory from concurrent writes across sessions.
@@ -137,6 +138,7 @@ impl QueueProcessor {
         runner: Arc<dyn Runner>,
         store: StateStore,
         sink: FileEventSink,
+        run_events: Arc<RunEventBuffer>,
     ) -> Self {
         Self {
             global_limit: Arc::new(Semaphore::new(config.daemon.max_concurrent_runs.max(1))),
@@ -144,6 +146,7 @@ impl QueueProcessor {
             runner,
             store,
             sink,
+            run_events,
             agent_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -686,7 +689,7 @@ impl QueueProcessor {
             session_key: session_key.to_string(),
             agent_id: agent_id.to_string(),
             provider,
-            model,
+            model: model.clone(),
             think_level,
             working_directory: working_directory.display().to_string(),
             prompt,
@@ -694,6 +697,7 @@ impl QueueProcessor {
             metadata,
         };
 
+        let provider_str = format!("{:?}", provider).to_lowercase();
         self.store.record_run_start(
             run_id,
             task_id,
@@ -701,18 +705,47 @@ impl QueueProcessor {
             session_key,
             agent_id,
             &req.prompt,
+            Some(&model),
+            Some(&provider_str),
         )?;
 
-        let out = self.runner.run(req).await;
+        // Create channel for streaming events
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<RunEvent>(256);
+        let run_events = self.run_events.clone();
+        let run_id_str = run_id.to_string();
+
+        // Spawn event forwarding task
+        let forward_handle = tokio::spawn(async move {
+            let mut count: u32 = 0;
+            while let Some(event) = rx.recv().await {
+                count += 1;
+                run_events.push(event);
+            }
+            count
+        });
+
+        let out = self.runner.run_streamed(req, tx).await;
+
+        // Wait for forwarding to finish and get event count
+        let event_count = forward_handle.await.unwrap_or(0);
+
         match out {
             Ok(run) => {
+                let stderr_ref = if run.stderr.is_empty() {
+                    None
+                } else {
+                    Some(run.stderr.as_str())
+                };
                 self.store.record_run_end(
                     run_id,
                     RunStatus::Succeeded,
                     Some(&run.text),
                     None,
                     Some(run.duration_ms),
+                    Some(event_count),
+                    stderr_ref,
                 )?;
+                self.run_events.mark_completed(&run_id_str);
 
                 if run.text.is_empty() {
                     Ok(run.stdout)
@@ -727,7 +760,10 @@ impl QueueProcessor {
                     None,
                     Some(&err.to_string()),
                     None,
+                    Some(event_count),
+                    None,
                 )?;
+                self.run_events.mark_completed(&run_id_str);
                 Err(err)
             }
         }

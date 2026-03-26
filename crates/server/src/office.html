@@ -461,6 +461,34 @@ tr:hover td { background: var(--bg-hover); }
 .mb-4 { margin-bottom: 16px; }
 .hidden { display: none !important; }
 
+/* Clickable rows */
+.clickable-row { cursor: pointer; }
+.clickable-row:hover { background: var(--bg-surface); }
+
+/* Event timeline */
+.event-timeline { max-height: 600px; overflow-y: auto; }
+.event-entry { border-left: 3px solid var(--border); padding: 8px 12px; margin-bottom: 2px; }
+.event-entry:last-child { margin-bottom: 0; }
+.event-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.event-icon { font-size: 14px; width: 20px; text-align: center; }
+.event-type { font-size: 12px; font-weight: 600; text-transform: capitalize; }
+.event-seq { font-size: 11px; color: var(--text-muted); }
+.event-time { font-size: 11px; margin-left: auto; }
+.event-body { padding-left: 28px; font-size: 13px; }
+.event-pre { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-size: 12px; font-family: 'SF Mono','Menlo',monospace; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: auto; margin: 4px 0; }
+.event-output { font-family: 'SF Mono','Menlo',monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 150px; overflow: auto; background: var(--bg); padding: 6px; border-radius: 4px; }
+.event-message { white-space: pre-wrap; word-break: break-word; }
+.event-thinking { font-style: italic; color: var(--text-dim); white-space: pre-wrap; max-height: 100px; overflow: auto; }
+.event-filters { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.event-tool_call { border-left-color: var(--accent); }
+.event-tool_result { border-left-color: var(--green); }
+.event-agent_message { border-left-color: #a78bfa; }
+.event-thinking { border-left-color: var(--text-muted); }
+.event-completed { border-left-color: var(--green); }
+.event-failed { border-left-color: var(--red); }
+.token-summary { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; font-size: 12px; font-family: 'SF Mono','Menlo',monospace; display: inline-block; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -540,6 +568,80 @@ tr:hover td { background: var(--bg-hover); }
   .sidebar.open { left: 0; }
   .grid-4 { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* Run Detail */
+.run-header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; }
+.run-header .badge { font-size: 13px; }
+.run-meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px 24px; margin-bottom: 16px; font-size: 13px; }
+.run-meta dt { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+.run-meta dd { margin: 0 0 4px; word-break: break-all; }
+
+.run-timeline { display: flex; flex-direction: column; gap: 2px; }
+
+.run-ev {
+  display: grid;
+  grid-template-columns: 90px 100px 1fr;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  transition: background var(--transition);
+}
+.run-ev:hover { background: var(--bg-hover); }
+.run-ev-time { color: var(--text-muted); font-family: 'SF Mono','Menlo',monospace; font-size: 12px; white-space: nowrap; }
+.run-ev-type { font-weight: 600; white-space: nowrap; }
+.run-ev-body { color: var(--text-dim); font-family: 'SF Mono','Menlo',monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.run-ev-body.expanded { white-space: pre-wrap; word-break: break-all; }
+
+.ev-tool_call .run-ev-type { color: var(--accent); }
+.ev-tool_result .run-ev-type { color: var(--green); }
+.ev-agent_message .run-ev-type { color: var(--yellow); }
+.ev-thinking .run-ev-type { color: var(--text-muted); font-style: italic; }
+.ev-completed .run-ev-type { color: var(--green); }
+.ev-failed .run-ev-type { color: var(--red); }
+.ev-text_chunk .run-ev-type { color: var(--text-dim); }
+
+.run-prompt-box, .run-output-box {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  font-family: 'SF Mono','Menlo',monospace;
+  font-size: 12px;
+  max-height: 150px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-dim);
+}
+
+.run-filter-bar {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center;
+}
+.run-filter-bar label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.run-filter-bar label:hover { color: var(--text); }
+.run-filter-bar input[type="checkbox"] { accent-color: var(--accent); }
+.run-filter-bar input[type="text"] {
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: 4px;
+  padding: 3px 8px; font-size: 12px; color: var(--text); outline: none; width: 180px;
+}
+.run-filter-bar input[type="text"]:focus { border-color: var(--accent); }
+
+.run-token-summary { display: flex; gap: 16px; margin-bottom: 12px; font-size: 12px; color: var(--text-dim); }
+.run-token-summary b { color: var(--text); font-weight: 600; }
+
+.run-live-indicator {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--accent);
+}
+.run-live-indicator::before {
+  content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+  animation: pulse-dot 1.5s infinite;
+}
+@keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+tr.clickable-row { cursor: pointer; }
+tr.clickable-row:hover td { background: var(--bg-hover); }
 </style>
 </head>
 <body>
@@ -733,20 +835,27 @@ tr:hover td { background: var(--bg-hover); }
 
   const validPages = new Set([
     'dashboard','events','agents','teams','settings',
-    'runs','sessions','responses','heartbeat','access','chatroom',
+    'runs','run-detail','sessions','responses','heartbeat','access','chatroom',
   ]);
 
   function pageFromPath() {
-    const seg = location.pathname.replace(/^\/office\/?/, '').split('/')[0];
+    const rest = location.pathname.replace(/^\/office\/?/, '');
+    const seg = rest.split('/')[0];
+    if (seg === 'run-detail') {
+      const runId = rest.split('/')[1];
+      if (runId) selectedRunId = runId;
+    }
     return validPages.has(seg) ? seg : 'dashboard';
   }
 
   window.navigate = function(page, pushState = true) {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (runEventSource && page !== 'run-detail') { runEventSource.close(); runEventSource = null; }
     currentPage = page;
     if (typeof closeSidebar === 'function') closeSidebar();
     if (pushState) {
-      const url = '/office/' + page;
+      let url = '/office/' + page;
+      if (page === 'run-detail' && selectedRunId) url += '/' + selectedRunId;
       history.pushState({ page }, '', url);
     }
     $$('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
@@ -763,8 +872,8 @@ tr:hover td { background: var(--bg-hover); }
   function pageTitle(page) {
     const titles = {
       dashboard: 'Dashboard', events: 'Events', agents: 'Agents', teams: 'Teams',
-      settings: 'Settings', runs: 'Runs', sessions: 'Sessions', responses: 'Pending Responses',
-      heartbeat: 'Heartbeat', access: 'Sender Access', chatroom: 'Chatroom',
+      settings: 'Settings', runs: 'Runs', 'run-detail': 'Run Detail', sessions: 'Sessions',
+      responses: 'Pending Responses', heartbeat: 'Heartbeat', access: 'Sender Access', chatroom: 'Chatroom',
     };
     return titles[page] || page;
   }
@@ -787,6 +896,7 @@ tr:hover td { background: var(--bg-hover); }
         case 'heartbeat': await renderHeartbeat(container); break;
         case 'access': await renderAccess(container); break;
         case 'chatroom': await renderChatroom(container); break;
+        case 'run-detail': await renderRunDetail(container); break;
       }
     } catch (err) {
       container.innerHTML = `<div class="empty" style="color:var(--red)">Error: ${escapeHtml(err.message)}</div>`;
@@ -1214,6 +1324,15 @@ tr:hover td { background: var(--bg-hover); }
   };
 
   /* Runs */
+  function fmtDuration(ms) {
+    if (!ms && ms !== 0) return '-';
+    if (ms < 1000) return ms + 'ms';
+    const sec = Math.round(ms / 1000);
+    if (sec < 60) return sec + 's';
+    const min = Math.floor(sec / 60);
+    return min + 'm ' + (sec % 60) + 's';
+  }
+
   async function renderRuns(el) {
     const data = await GET('/api/runs?limit=100');
     const runs = data.runs || [];
@@ -1224,21 +1343,240 @@ tr:hover td { background: var(--bg-hover); }
     }
 
     el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
-      <thead><tr><th>ID</th><th>Agent</th><th>Status</th><th>Session</th><th>Created</th><th>Updated</th></tr></thead>
+      <thead><tr><th>Agent</th><th>Status</th><th>Duration</th><th>Model</th><th>Events</th><th>Output</th><th>Created</th></tr></thead>
       <tbody>
-        ${runs.map(r => `<tr>
-          <td class="mono" style="max-width:100px" title="${escapeHtml(r.run_id)}">${truncate(r.run_id, 12)}</td>
+        ${runs.map(r => `<tr class="clickable-row" onclick="viewRunDetail('${escapeHtml(r.run_id)}')" title="Click to view details">
           <td><span class="badge badge-blue">${escapeHtml(r.agent_id)}</span></td>
           <td>${statusBadge(r.status)}</td>
-          <td class="mono text-dim" title="${escapeHtml(r.session_key)}">${truncate(r.session_key, 20)}</td>
+          <td class="mono">${fmtDuration(r.duration_ms)}</td>
+          <td class="text-dim">${escapeHtml(r.model || '-')}</td>
+          <td class="mono">${r.event_count != null ? r.event_count : '-'}</td>
+          <td class="text-dim" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(r.output || '')}">${escapeHtml(truncate(r.output || '', 80))}</td>
           <td class="text-dim">${fmtDateTime(r.created_at)}</td>
-          <td class="text-dim">${fmtDateTime(r.updated_at)}</td>
         </tr>`).join('')}
       </tbody>
     </table></div></div>`;
 
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     pollTimer = setInterval(() => { if (currentPage === 'runs') renderRuns(el); }, 5000);
+  }
+
+  /* Run Detail */
+  let selectedRunId = null;
+  let runEventSource = null;
+  let runEventFilter = null; // null = show all
+
+  window.viewRunDetail = function(runId) {
+    selectedRunId = runId;
+    navigate('run-detail');
+  };
+
+  window.setRunEventFilter = function(type) {
+    runEventFilter = type || null;
+    const container = $('#page-container');
+    if (container && currentPage === 'run-detail') renderRunDetail(container);
+  };
+
+  window.backToRuns = function() {
+    if (runEventSource) { runEventSource.close(); runEventSource = null; }
+    navigate('runs');
+  };
+
+  function renderEventIcon(type) {
+    const icons = {
+      tool_call: '\u{1F527}',
+      tool_result: '\u{1F4E4}',
+      agent_message: '\u{1F4AC}',
+      thinking: '\u{1F4AD}',
+      text_chunk: '\u{1F4DD}',
+      started: '\u{25B6}',
+      completed: '\u{2705}',
+      failed: '\u{274C}',
+    };
+    return icons[type] || '\u{2022}';
+  }
+
+  function renderEventContent(ev) {
+    const d = ev.data || {};
+    switch (ev.event_type) {
+      case 'tool_call': {
+        const phase = d.phase === 'completed' ? ' (done)' : '';
+        const args = d.arguments ? `<pre class="event-pre">${escapeHtml(typeof d.arguments === 'string' ? d.arguments : JSON.stringify(d.arguments, null, 2))}</pre>` : '';
+        return `<strong>${escapeHtml(d.name || 'tool')}</strong>${phase}${args}`;
+      }
+      case 'tool_result': {
+        const output = d.output || '';
+        return `<div class="event-output">${escapeHtml(truncate(output, 2000))}</div>`;
+      }
+      case 'agent_message': {
+        const text = d.text || '';
+        return text ? `<div class="event-message">${escapeHtml(truncate(text, 2000))}</div>` : '<em>started</em>';
+      }
+      case 'thinking':
+        return `<div class="event-thinking">${escapeHtml(truncate(d.text || JSON.stringify(d), 1000))}</div>`;
+      case 'completed': {
+        const usage = d.usage;
+        if (usage) {
+          return `<span class="text-dim">input: ${usage.input_tokens || '?'}, output: ${usage.output_tokens || '?'}</span>`;
+        }
+        return '<em>completed</em>';
+      }
+      case 'failed':
+        return `<span style="color:var(--red)">${escapeHtml(d.error || 'failed')}</span>`;
+      case 'text_chunk':
+        return `<span class="mono text-dim">${escapeHtml(truncate(d.text || JSON.stringify(d), 200))}</span>`;
+      default:
+        return `<pre class="event-pre">${escapeHtml(JSON.stringify(d, null, 2))}</pre>`;
+    }
+  }
+
+  async function renderRunDetail(el) {
+    if (!selectedRunId) {
+      el.innerHTML = '<div class="empty">No run selected. <a href="#" onclick="backToRuns();return false">Back to runs</a></div>';
+      return;
+    }
+
+    let run;
+    try {
+      run = await GET('/api/runs/' + selectedRunId);
+    } catch {
+      el.innerHTML = '<div class="empty">Run not found. <a href="#" onclick="backToRuns();return false">Back to runs</a></div>';
+      return;
+    }
+
+    let eventsData;
+    try {
+      eventsData = await GET('/api/runs/' + selectedRunId + '/events');
+    } catch {
+      eventsData = { events: [] };
+    }
+
+    const events = eventsData.events || [];
+    const isRunning = run.status === 'running' || run.status === 'pending';
+
+    // Event type counts for filter bar
+    const typeCounts = {};
+    events.forEach(ev => { typeCounts[ev.event_type] = (typeCounts[ev.event_type] || 0) + 1; });
+    const filterTypes = ['tool_call', 'tool_result', 'agent_message', 'thinking', 'completed', 'text_chunk'];
+
+    const filteredEvents = runEventFilter
+      ? events.filter(ev => ev.event_type === runEventFilter)
+      : events;
+
+    // Token summary from completed events
+    let tokenSummary = '';
+    const completedEv = events.find(ev => ev.event_type === 'completed' && ev.data && ev.data.usage);
+    if (completedEv && completedEv.data.usage) {
+      const u = completedEv.data.usage;
+      tokenSummary = `<div class="token-summary">Tokens: ${u.input_tokens || '?'} in / ${u.output_tokens || '?'} out</div>`;
+    }
+
+    el.innerHTML = `
+      <div style="margin-bottom:12px">
+        <button class="btn btn-sm" onclick="backToRuns()">← Back to Runs</button>
+        ${isRunning ? '<span class="badge badge-yellow" style="margin-left:8px;animation:pulse 1.5s infinite">Running</span>' : ''}
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span>Run ${truncate(run.run_id, 12)}</span>
+          <span class="text-dim">${statusBadge(run.status)} ${fmtDuration(run.duration_ms)}</span>
+        </div>
+        <div class="card-body">
+          <div class="grid-2" style="gap:8px;margin-bottom:12px">
+            <div><strong>Agent:</strong> <span class="badge badge-blue">${escapeHtml(run.agent_id)}</span></div>
+            <div><strong>Model:</strong> <span class="mono">${escapeHtml(run.model || '-')}</span></div>
+            <div><strong>Provider:</strong> <span class="mono">${escapeHtml(run.provider || '-')}</span></div>
+            <div><strong>Events:</strong> <span class="mono">${run.event_count != null ? run.event_count : events.length}</span></div>
+            <div><strong>Session:</strong> <span class="mono text-dim" title="${escapeHtml(run.session_key)}">${truncate(run.session_key, 30)}</span></div>
+            <div><strong>Created:</strong> <span class="text-dim">${fmtDateTime(run.created_at)}</span></div>
+          </div>
+          ${tokenSummary}
+          ${run.error ? `<div style="color:var(--red);margin-top:8px"><strong>Error:</strong> ${escapeHtml(run.error)}</div>` : ''}
+        </div>
+      </div>
+      ${run.output ? `<div class="card" style="margin-top:12px">
+        <div class="card-header"><span>Output</span></div>
+        <div class="card-body"><pre class="event-pre" style="max-height:300px;overflow:auto">${escapeHtml(run.output)}</pre></div>
+      </div>` : ''}
+      ${run.stderr ? `<div class="card" style="margin-top:12px">
+        <div class="card-header"><span>Stderr</span></div>
+        <div class="card-body"><pre class="event-pre" style="max-height:200px;overflow:auto;color:var(--red)">${escapeHtml(run.stderr)}</pre></div>
+      </div>` : ''}
+      <div class="card" style="margin-top:12px">
+        <div class="card-header">
+          <span>Event Timeline (${filteredEvents.length}${runEventFilter ? ' filtered' : ''})</span>
+        </div>
+        <div class="card-body">
+          <div class="event-filters">
+            <button class="btn btn-sm ${!runEventFilter ? 'btn-primary' : ''}" onclick="setRunEventFilter(null)">All (${events.length})</button>
+            ${filterTypes.filter(t => typeCounts[t]).map(t =>
+              `<button class="btn btn-sm ${runEventFilter === t ? 'btn-primary' : ''}" onclick="setRunEventFilter('${t}')">${t.replace('_',' ')} (${typeCounts[t]})</button>`
+            ).join('')}
+          </div>
+          <div class="event-timeline" id="event-timeline">
+            ${filteredEvents.length === 0
+              ? '<div class="empty">No events recorded</div>'
+              : filteredEvents.map(ev => `
+                <div class="event-entry event-${ev.event_type}">
+                  <div class="event-header">
+                    <span class="event-icon">${renderEventIcon(ev.event_type)}</span>
+                    <span class="event-type">${ev.event_type.replace('_', ' ')}</span>
+                    <span class="event-seq mono">#${ev.seq}</span>
+                    <span class="event-time text-dim">${fmtTime(ev.timestamp)}</span>
+                  </div>
+                  <div class="event-body">${renderEventContent(ev)}</div>
+                </div>
+              `).join('')}
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Set up SSE for live updates if running
+    if (isRunning) {
+      connectRunEventStream();
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      pollTimer = setInterval(() => { if (currentPage === 'run-detail') renderRunDetail(el); }, 3000);
+    }
+  }
+
+  function connectRunEventStream() {
+    if (runEventSource) { runEventSource.close(); }
+    try {
+      runEventSource = new EventSource(apiUrl('/api/events/run-stream'));
+      runEventSource.addEventListener('run_event', (e) => {
+        try {
+          const ev = JSON.parse(e.data);
+          if (ev.run_id === selectedRunId) {
+            appendRunEvent(ev);
+          }
+        } catch {}
+      });
+      runEventSource.onerror = () => {
+        if (runEventSource) { runEventSource.close(); runEventSource = null; }
+      };
+    } catch {}
+  }
+
+  function appendRunEvent(ev) {
+    if (runEventFilter && ev.event_type !== runEventFilter) return;
+    const timeline = document.getElementById('event-timeline');
+    if (!timeline) return;
+    const empty = timeline.querySelector('.empty');
+    if (empty) empty.remove();
+    const div = document.createElement('div');
+    div.className = 'event-entry event-' + ev.event_type;
+    div.innerHTML = `
+      <div class="event-header">
+        <span class="event-icon">${renderEventIcon(ev.event_type)}</span>
+        <span class="event-type">${ev.event_type.replace('_', ' ')}</span>
+        <span class="event-seq mono">#${ev.seq}</span>
+        <span class="event-time text-dim">${fmtTime(ev.timestamp)}</span>
+      </div>
+      <div class="event-body">${renderEventContent(ev)}</div>
+    `;
+    timeline.appendChild(div);
+    timeline.scrollTop = timeline.scrollHeight;
   }
 
   /* Sessions */

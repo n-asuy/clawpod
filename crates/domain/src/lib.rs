@@ -5,6 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -534,9 +535,60 @@ pub struct RouteDecision {
     pub team_id: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Run event streaming
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunEventType {
+    Started,
+    ToolCall,
+    ToolResult,
+    AgentMessage,
+    Thinking,
+    Completed,
+    Failed,
+    TextChunk,
+}
+
+impl std::fmt::Display for RunEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Started => "started",
+            Self::ToolCall => "tool_call",
+            Self::ToolResult => "tool_result",
+            Self::AgentMessage => "agent_message",
+            Self::Thinking => "thinking",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::TextChunk => "text_chunk",
+        };
+        f.write_str(s)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunEvent {
+    pub run_id: String,
+    pub seq: u32,
+    pub timestamp: String,
+    pub event_type: RunEventType,
+    pub data: Value,
+}
+
 #[async_trait]
 pub trait Runner: Send + Sync {
     async fn run(&self, request: RunRequest) -> Result<RunResult>;
+
+    async fn run_streamed(
+        &self,
+        request: RunRequest,
+        tx: tokio::sync::mpsc::Sender<RunEvent>,
+    ) -> Result<RunResult> {
+        let _ = tx;
+        self.run(request).await
+    }
 }
 
 #[derive(Debug, Error)]

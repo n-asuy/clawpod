@@ -1,3 +1,6 @@
+mod run_events;
+pub use run_events::RunEventBuffer;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -112,6 +115,14 @@ struct RunRecord {
     updated_at: String,
     started_at: Option<String>,
     ended_at: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    event_count: Option<u32>,
+    #[serde(default)]
+    stderr: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +279,7 @@ impl StateStore {
         Ok(store)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn record_run_start(
         &self,
         run_id: Uuid,
@@ -276,6 +288,8 @@ impl StateStore {
         session_key: &str,
         agent_id: &str,
         prompt: &str,
+        model: Option<&str>,
+        provider: Option<&str>,
     ) -> Result<()> {
         let now = now_rfc3339();
         let mut snapshot = self.lock_snapshot()?;
@@ -297,11 +311,16 @@ impl StateStore {
                 updated_at: now,
                 started_at: None,
                 ended_at: None,
+                model: model.map(ToString::to_string),
+                provider: provider.map(ToString::to_string),
+                event_count: None,
+                stderr: None,
             },
         );
         self.persist_locked(&snapshot)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn record_run_end(
         &self,
         run_id: Uuid,
@@ -309,6 +328,8 @@ impl StateStore {
         output: Option<&str>,
         error: Option<&str>,
         duration_ms: Option<u128>,
+        event_count: Option<u32>,
+        stderr: Option<&str>,
     ) -> Result<()> {
         let now = now_rfc3339();
         let mut snapshot = self.lock_snapshot()?;
@@ -320,8 +341,41 @@ impl StateStore {
             run.duration_ms = duration_ms.map(|value| value as i64);
             run.ended_at = Some(now.clone());
             run.updated_at = now;
+            if event_count.is_some() {
+                run.event_count = event_count;
+            }
+            if stderr.is_some() {
+                run.stderr = stderr.map(ToString::to_string);
+            }
         }
         self.persist_locked(&snapshot)
+    }
+
+    pub fn get_run(&self, run_id: &str) -> Result<Option<Value>> {
+        let mut snapshot = self.lock_snapshot()?;
+        self.refresh_locked(&mut snapshot)?;
+        Ok(snapshot.runs.get(run_id).map(|run| {
+            serde_json::json!({
+                "run_id": run.id,
+                "task_id": run.task_id,
+                "message_id": run.message_id,
+                "session_key": run.session_key,
+                "agent_id": run.agent_id,
+                "status": run.status,
+                "prompt": run.prompt,
+                "output": run.output,
+                "error": run.error,
+                "duration_ms": run.duration_ms,
+                "created_at": run.created_at,
+                "updated_at": run.updated_at,
+                "started_at": run.started_at,
+                "ended_at": run.ended_at,
+                "model": run.model,
+                "provider": run.provider,
+                "event_count": run.event_count,
+                "stderr": run.stderr,
+            })
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -712,6 +766,9 @@ impl StateStore {
                     "updated_at": run.updated_at,
                     "output": run.output,
                     "duration_ms": run.duration_ms,
+                    "model": run.model,
+                    "provider": run.provider,
+                    "event_count": run.event_count,
                 })
             })
             .collect())

@@ -1,10 +1,13 @@
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
-use domain::{ProviderKind, RunRequest, RunResult, Runner};
+use chrono::Utc;
+use domain::{ProviderKind, RunEvent, RunEventType, RunRequest, RunResult, Runner};
 use serde_json::Value;
 use tokio::fs;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 use tracing::warn;
 
@@ -24,12 +27,23 @@ impl CliRunner {
 #[async_trait::async_trait]
 impl Runner for CliRunner {
     async fn run(&self, request: RunRequest) -> Result<RunResult> {
+        let (tx, _rx) = mpsc::channel(1);
+        self.run_streamed(request, tx).await
+    }
+
+    async fn run_streamed(
+        &self,
+        request: RunRequest,
+        tx: mpsc::Sender<RunEvent>,
+    ) -> Result<RunResult> {
         let started = Instant::now();
+        let run_id = request.run_id.to_string();
 
         if matches!(request.provider, ProviderKind::Mock) {
             return run_mock(request).await;
         }
 
+        let provider = request.provider;
         let (program, args, envs) = match request.provider {
             ProviderKind::Anthropic => {
                 let (program, args) = build_claude_command(&request);
@@ -62,15 +76,42 @@ impl Runner for CliRunner {
 
         let child_stdout = child.stdout.take();
         let child_stderr = child.stderr.take();
-        let read_output = async {
-            let stdout = match child_stdout {
-                Some(mut s) => {
-                    let mut buf = Vec::new();
-                    tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf).await?;
-                    buf
+
+        let is_codex = matches!(provider, ProviderKind::Openai)
+            || is_openai_harness(&request.metadata);
+        let request_metadata = request.metadata.clone();
+
+        let run_id_clone = run_id.clone();
+        let stream_and_collect = async move {
+            let mut stdout_lines = Vec::new();
+            let mut seq: u32 = 0;
+
+            // Stream stdout line-by-line
+            if let Some(stdout) = child_stdout {
+                let reader = BufReader::new(stdout);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    stdout_lines.push(line.clone());
+                    seq += 1;
+
+                    let event = if is_codex {
+                        parse_codex_jsonl_event(&line, &run_id_clone, seq)
+                    } else {
+                        Some(RunEvent {
+                            run_id: run_id_clone.clone(),
+                            seq,
+                            timestamp: Utc::now().to_rfc3339(),
+                            event_type: RunEventType::TextChunk,
+                            data: serde_json::json!({ "text": line }),
+                        })
+                    };
+                    if let Some(ev) = event {
+                        let _ = tx.send(ev).await;
+                    }
                 }
-                None => Vec::new(),
-            };
+            }
+
+            // Collect stderr
             let stderr = match child_stderr {
                 Some(mut s) => {
                     let mut buf = Vec::new();
@@ -79,25 +120,23 @@ impl Runner for CliRunner {
                 }
                 None => Vec::new(),
             };
+
             let status = child.wait().await?;
-            Ok::<_, std::io::Error>(std::process::Output {
-                status,
-                stdout,
-                stderr,
-            })
+
+            let stdout_str = stdout_lines.join("\n");
+            let stderr_str = String::from_utf8_lossy(&stderr).to_string();
+            Ok::<_, std::io::Error>((stdout_str, stderr_str, status))
         };
 
-        let output = timeout(self.timeout, read_output)
+        let (stdout, stderr, status) = timeout(self.timeout, stream_and_collect)
             .await
             .map_err(|_| anyhow!("runner timed out after {}s", self.timeout.as_secs()))?
             .with_context(|| format!("failed to execute runner command: {program}"))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(-1);
+        let exit_code = status.code().unwrap_or(-1);
 
         let mut text = stdout.clone();
-        if matches!(request.provider, ProviderKind::Openai) {
+        if is_codex {
             text = extract_codex_text(&stdout).unwrap_or_else(|| {
                 warn!("codex json parse fallback to raw stdout");
                 stdout.clone()
@@ -110,10 +149,203 @@ impl Runner for CliRunner {
             stderr,
             exit_code,
             duration_ms: started.elapsed().as_millis(),
-            metadata: request.metadata.clone(),
+            metadata: request_metadata,
         })
     }
 }
+
+fn is_openai_harness(metadata: &std::collections::HashMap<String, String>) -> bool {
+    metadata
+        .get("custom_harness")
+        .is_some_and(|h| h == "openai")
+}
+
+// ---------------------------------------------------------------------------
+// Codex JSONL event parsing
+// ---------------------------------------------------------------------------
+
+fn parse_codex_jsonl_event(line: &str, run_id: &str, seq: u32) -> Option<RunEvent> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let event_type_str = value
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+
+    let now = Utc::now().to_rfc3339();
+
+    match event_type_str {
+        // Tool call initiated
+        "item.created" => {
+            let item = value.get("item")?;
+            let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+
+            match item_type {
+                "function_call" => {
+                    let name = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let call_id = item
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    Some(RunEvent {
+                        run_id: run_id.to_string(),
+                        seq,
+                        timestamp: now,
+                        event_type: RunEventType::ToolCall,
+                        data: serde_json::json!({
+                            "name": name,
+                            "call_id": call_id,
+                            "phase": "start",
+                        }),
+                    })
+                }
+                "agent_message" => Some(RunEvent {
+                    run_id: run_id.to_string(),
+                    seq,
+                    timestamp: now,
+                    event_type: RunEventType::AgentMessage,
+                    data: serde_json::json!({ "phase": "start" }),
+                }),
+                _ => Some(RunEvent {
+                    run_id: run_id.to_string(),
+                    seq,
+                    timestamp: now,
+                    event_type: RunEventType::TextChunk,
+                    data: value,
+                }),
+            }
+        }
+        // Tool call or agent message completed
+        "item.completed" => {
+            let item = value.get("item")?;
+            let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+
+            match item_type {
+                "function_call" => {
+                    let name = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let call_id = item
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let arguments = item
+                        .get("arguments")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    Some(RunEvent {
+                        run_id: run_id.to_string(),
+                        seq,
+                        timestamp: now,
+                        event_type: RunEventType::ToolCall,
+                        data: serde_json::json!({
+                            "name": name,
+                            "call_id": call_id,
+                            "arguments": arguments,
+                            "phase": "completed",
+                        }),
+                    })
+                }
+                "function_call_output" => {
+                    let call_id = item
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let output = item
+                        .get("output")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    Some(RunEvent {
+                        run_id: run_id.to_string(),
+                        seq,
+                        timestamp: now,
+                        event_type: RunEventType::ToolResult,
+                        data: serde_json::json!({
+                            "call_id": call_id,
+                            "output": truncate_str(output, 4000),
+                        }),
+                    })
+                }
+                "agent_message" => {
+                    let text = item
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    Some(RunEvent {
+                        run_id: run_id.to_string(),
+                        seq,
+                        timestamp: now,
+                        event_type: RunEventType::AgentMessage,
+                        data: serde_json::json!({
+                            "text": text,
+                            "phase": "completed",
+                        }),
+                    })
+                }
+                "reasoning" => Some(RunEvent {
+                    run_id: run_id.to_string(),
+                    seq,
+                    timestamp: now,
+                    event_type: RunEventType::Thinking,
+                    data: serde_json::json!({
+                        "text": item.get("text").and_then(|v| v.as_str()).unwrap_or_default(),
+                    }),
+                }),
+                _ => Some(RunEvent {
+                    run_id: run_id.to_string(),
+                    seq,
+                    timestamp: now,
+                    event_type: RunEventType::TextChunk,
+                    data: value,
+                }),
+            }
+        }
+        // Reasoning item
+        "item.reasoning" | "reasoning" => Some(RunEvent {
+            run_id: run_id.to_string(),
+            seq,
+            timestamp: now,
+            event_type: RunEventType::Thinking,
+            data: value,
+        }),
+        // Usage / completion events
+        "response.completed" | "response.done" => {
+            let usage = value.get("response").and_then(|r| r.get("usage"));
+            Some(RunEvent {
+                run_id: run_id.to_string(),
+                seq,
+                timestamp: now,
+                event_type: RunEventType::Completed,
+                data: serde_json::json!({
+                    "usage": usage,
+                }),
+            })
+        }
+        // Pass through any other recognized events
+        _ => Some(RunEvent {
+            run_id: run_id.to_string(),
+            seq,
+            timestamp: now,
+            event_type: RunEventType::TextChunk,
+            data: value,
+        }),
+    }
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}... ({} chars truncated)", &s[..max], s.len() - max)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mock runner
+// ---------------------------------------------------------------------------
 
 async fn run_mock(request: RunRequest) -> Result<RunResult> {
     let started = Instant::now();
@@ -145,6 +377,10 @@ async fn run_mock(request: RunRequest) -> Result<RunResult> {
         metadata: request.metadata.clone(),
     })
 }
+
+// ---------------------------------------------------------------------------
+// Command builders
+// ---------------------------------------------------------------------------
 
 fn build_claude_command(request: &RunRequest) -> (String, Vec<String>) {
     let mut args = vec!["--dangerously-skip-permissions".to_string()];
@@ -294,5 +530,79 @@ fn parse_handoff(prompt: &str) -> Option<String> {
         None
     } else {
         Some(target.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_codex_agent_message_completed() {
+        let line = r#"{"type":"item.completed","item":{"type":"agent_message","text":"Hello world"}}"#;
+        let event = parse_codex_jsonl_event(line, "run-1", 1).unwrap();
+        assert_eq!(event.event_type, RunEventType::AgentMessage);
+        assert_eq!(event.data["text"], "Hello world");
+        assert_eq!(event.data["phase"], "completed");
+    }
+
+    #[test]
+    fn parse_codex_function_call_created() {
+        let line =
+            r#"{"type":"item.created","item":{"type":"function_call","name":"shell","call_id":"c1"}}"#;
+        let event = parse_codex_jsonl_event(line, "run-1", 1).unwrap();
+        assert_eq!(event.event_type, RunEventType::ToolCall);
+        assert_eq!(event.data["name"], "shell");
+        assert_eq!(event.data["phase"], "start");
+    }
+
+    #[test]
+    fn parse_codex_function_call_completed() {
+        let line = r#"{"type":"item.completed","item":{"type":"function_call","name":"shell","call_id":"c1","arguments":"{\"cmd\":\"ls\"}"}}"#;
+        let event = parse_codex_jsonl_event(line, "run-1", 2).unwrap();
+        assert_eq!(event.event_type, RunEventType::ToolCall);
+        assert_eq!(event.data["phase"], "completed");
+        assert_eq!(event.data["arguments"], "{\"cmd\":\"ls\"}");
+    }
+
+    #[test]
+    fn parse_codex_function_call_output() {
+        let line = r#"{"type":"item.completed","item":{"type":"function_call_output","call_id":"c1","output":"file1.txt\nfile2.txt"}}"#;
+        let event = parse_codex_jsonl_event(line, "run-1", 3).unwrap();
+        assert_eq!(event.event_type, RunEventType::ToolResult);
+        assert_eq!(event.data["call_id"], "c1");
+    }
+
+    #[test]
+    fn parse_codex_response_completed() {
+        let line = r#"{"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":50}}}"#;
+        let event = parse_codex_jsonl_event(line, "run-1", 4).unwrap();
+        assert_eq!(event.event_type, RunEventType::Completed);
+        assert_eq!(event.data["usage"]["input_tokens"], 100);
+    }
+
+    #[test]
+    fn parse_codex_invalid_json_returns_none() {
+        let event = parse_codex_jsonl_event("not json", "run-1", 1);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn truncate_str_short() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_str_long() {
+        let result = truncate_str("hello world", 5);
+        assert!(result.starts_with("hello"));
+        assert!(result.contains("truncated"));
+    }
+
+    #[test]
+    fn extract_codex_text_works() {
+        let jsonl = r#"{"type":"item.completed","item":{"type":"function_call","name":"shell"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"done"}}"#;
+        assert_eq!(extract_codex_text(jsonl), Some("done".to_string()));
     }
 }

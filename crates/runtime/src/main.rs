@@ -266,7 +266,8 @@ async fn main() -> Result<()> {
             log_startup_banner(&config.home_dir());
             let sink = FileEventSink::new(config.event_log_path())?;
             let store = StateStore::new(config.state_path())?;
-            server::run(config, config_path, store, sink, None, None).await?;
+            let run_events = Arc::new(store::RunEventBuffer::new(50, 500));
+            server::run(config, config_path, store, sink, None, None, run_events).await?;
         }
         Commands::Reset { agent } => reset(&config, &agent)?,
         Commands::Pairing { command } => pairing_cmd(&config, &command)?,
@@ -285,8 +286,14 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
     let store = StateStore::new(config.state_path())?;
     let runner = Arc::new(CliRunner::new(config.runner.timeout_sec));
     let config_arc = Arc::new(config.clone());
-    let processor =
-        QueueProcessor::new(config.clone(), runner.clone(), store.clone(), sink.clone());
+    let run_events = Arc::new(store::RunEventBuffer::new(50, 500));
+    let processor = QueueProcessor::new(
+        config.clone(),
+        runner.clone(),
+        store.clone(),
+        sink.clone(),
+        run_events.clone(),
+    );
     let mut tasks = JoinSet::new();
 
     spawn_component(
@@ -319,6 +326,7 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
         let server_sink = FileEventSink::new(server_config.event_log_path())?;
         let server_hb = heartbeat_service.clone();
         let server_hb_control = heartbeat_control.clone();
+        let server_run_events = run_events.clone();
         spawn_component(&mut tasks, "office", async move {
             server::run(
                 server_config,
@@ -327,6 +335,7 @@ async fn run_daemon(config: RuntimeConfig, config_path: PathBuf) -> Result<()> {
                 server_sink,
                 Some(server_hb),
                 Some(server_hb_control),
+                server_run_events,
             )
             .await
         });
