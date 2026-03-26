@@ -313,25 +313,24 @@ impl QueueProcessor {
             parse_agent_routing(&incoming_hook.text, &self.config.agents, &self.config.teams);
         let was_explicit_mention = route.agent_id != "default";
 
-        if route.agent_id == "default" {
-            route.agent_id = resolve_binding(&event, &self.config.bindings, &default_agent);
-        }
-
-        // Sticky routing: if no explicit @mention and no binding match,
-        // check if this sender has a routing affinity from a previous conversation.
-        if !was_explicit_mention
-            && route.agent_id == default_agent
-            && !is_internal_channel(&event.channel)
-        {
+        // Sticky routing: if no explicit @mention, check if this sender has
+        // a routing affinity from a previous conversation. Takes priority
+        // over bindings so that "@agent foo" followed by "bar" keeps going
+        // to the same agent.
+        if !was_explicit_mention && !is_internal_channel(&event.channel) {
             if let Ok(Some(affinity_agent)) = self.store.get_routing_affinity(
                 &event.channel,
                 &event.peer_id,
                 &event.sender_id,
             ) {
                 if self.config.agents.contains_key(&affinity_agent) {
-                    route.agent_id = affinity_agent;
+                    route.agent_id = affinity_agent.clone();
                 }
             }
+        }
+
+        if route.agent_id == "default" {
+            route.agent_id = resolve_binding(&event, &self.config.bindings, &default_agent);
         }
 
         if let Some(forced) = &event.pre_routed_agent {
