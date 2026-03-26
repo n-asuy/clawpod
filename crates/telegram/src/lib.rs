@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use config::{evaluate_ingress_policy, IngressDecision, RuntimeConfig};
 use domain::ChatType;
-use observer::{mark_component_disabled, mark_component_error, mark_component_ok};
+use observer::{mark_component_disabled, mark_component_ok};
 use queue::{
     ack_outgoing_message, enqueue_message, enqueue_outgoing_message, list_outgoing_messages,
     EnqueueMessage,
@@ -44,10 +44,7 @@ pub async fn run(config: RuntimeConfig) -> Result<()> {
     let outgoing_config = config.clone();
     tokio::spawn(async move {
         mark_component_ok("telegram_outgoing");
-        if let Err(err) = outgoing_loop(outgoing_config, outgoing_bot).await {
-            mark_component_error("telegram_outgoing", err.to_string());
-            error!("telegram outgoing loop failed: {err:#}");
-        }
+        outgoing_loop(outgoing_config, outgoing_bot).await;
     });
 
     teloxide::repl(bot, move |bot: Bot, message: Message| {
@@ -261,13 +258,22 @@ async fn enqueue_pairing_response(
     Ok(())
 }
 
-async fn outgoing_loop(config: RuntimeConfig, bot: Bot) -> Result<()> {
+async fn outgoing_loop(config: RuntimeConfig, bot: Bot) {
     loop {
-        let messages = list_outgoing_messages(&config, "telegram").await?;
+        let messages = match list_outgoing_messages(&config, "telegram").await {
+            Ok(msgs) => msgs,
+            Err(err) => {
+                error!("telegram outgoing scan failed: {err:#}");
+                sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(300))).await;
+                continue;
+            }
+        };
         for message in messages {
             match send_outgoing(&bot, &message).await {
                 Ok(()) => {
-                    ack_outgoing_message(&message.path).await?;
+                    if let Err(err) = ack_outgoing_message(&message.path).await {
+                        error!(path = %message.path.display(), "telegram ack failed: {err:#}");
+                    }
                 }
                 Err(err) => {
                     warn!(
@@ -278,10 +284,7 @@ async fn outgoing_loop(config: RuntimeConfig, bot: Bot) -> Result<()> {
             }
         }
 
-        sleep(Duration::from_millis(
-            config.daemon.poll_interval_ms.max(300),
-        ))
-        .await;
+        sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(300))).await;
     }
 }
 

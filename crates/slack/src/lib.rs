@@ -91,17 +91,7 @@ pub async fn run(config: RuntimeConfig) -> Result<()> {
     let outgoing_diagnostics = diagnostics.clone();
     tokio::spawn(async move {
         mark_component_ok("slack_outgoing");
-        if let Err(err) = outgoing_loop(
-            outgoing_config,
-            outgoing_client,
-            outgoing_token,
-            outgoing_diagnostics,
-        )
-        .await
-        {
-            mark_component_error("slack_outgoing", err.to_string());
-            error!("slack outgoing loop failed: {err:#}");
-        }
+        outgoing_loop(outgoing_config, outgoing_client, outgoing_token, outgoing_diagnostics).await;
     });
 
     match config.slack_app_token()? {
@@ -772,9 +762,16 @@ async fn outgoing_loop(
     client: Client,
     bot_token: String,
     diagnostics: SlackDiagnostics,
-) -> Result<()> {
+) {
     loop {
-        let messages = list_outgoing_messages(&config, "slack").await?;
+        let messages = match list_outgoing_messages(&config, "slack").await {
+            Ok(msgs) => msgs,
+            Err(err) => {
+                error!("slack outgoing scan failed: {err:#}");
+                sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(500))).await;
+                continue;
+            }
+        };
         for message in messages {
             match send_outgoing(&client, &bot_token, &message).await {
                 Ok(()) => {
@@ -787,7 +784,9 @@ async fn outgoing_loop(
                         }),
                     );
                     mark_component_ok("slack_outgoing");
-                    ack_outgoing_message(&message.path).await?;
+                    if let Err(err) = ack_outgoing_message(&message.path).await {
+                        error!(path = %message.path.display(), "slack ack failed: {err:#}");
+                    }
                 }
                 Err(err) => {
                     diagnostics.emit(
@@ -805,10 +804,7 @@ async fn outgoing_loop(
             }
         }
 
-        sleep(Duration::from_millis(
-            config.daemon.poll_interval_ms.max(500),
-        ))
-        .await;
+        sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(500))).await;
     }
 }
 

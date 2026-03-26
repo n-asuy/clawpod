@@ -95,10 +95,7 @@ pub async fn run(config: RuntimeConfig) -> Result<()> {
     let outgoing_live = Arc::clone(&live);
     tokio::spawn(async move {
         mark_component_ok("discord_outgoing");
-        if let Err(err) = outgoing_loop(outgoing_config, http, outgoing_live).await {
-            mark_component_error("discord_outgoing", err.to_string());
-            error!("discord outgoing loop failed: {err:#}");
-        }
+        outgoing_loop(outgoing_config, http, outgoing_live).await;
     });
 
     let result = client.start().await.context("discord client stopped");
@@ -332,24 +329,31 @@ async fn enqueue_pairing_response(
     Ok(())
 }
 
-async fn outgoing_loop(
-    config: RuntimeConfig,
-    http: Arc<Http>,
-    live: Arc<DiscordLiveState>,
-) -> Result<()> {
+async fn outgoing_loop(config: RuntimeConfig, http: Arc<Http>, live: Arc<DiscordLiveState>) {
     loop {
-        let messages = list_outgoing_messages(&config, "discord").await?;
+        let messages = match list_outgoing_messages(&config, "discord").await {
+            Ok(msgs) => msgs,
+            Err(err) => {
+                error!("discord outgoing scan failed: {err:#}");
+                sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(300))).await;
+                continue;
+            }
+        };
         for message in messages {
             match send_outgoing(&http, &message).await {
                 Ok(()) => {
-                    ack_outgoing_message(&message.path).await?;
+                    if let Err(err) = ack_outgoing_message(&message.path).await {
+                        error!(path = %message.path.display(), "discord ack failed: {err:#}");
+                    }
                     live.stop_typing(&message.recipient_id);
                 }
                 Err(err) => {
                     let err_str = format!("{err:#}");
                     if is_permanent_send_error(&err_str) {
                         warn!(path = %message.path.display(), "discord send permanently failed, dropping: {err_str}");
-                        ack_outgoing_message(&message.path).await?;
+                        if let Err(ack_err) = ack_outgoing_message(&message.path).await {
+                            error!(path = %message.path.display(), "discord ack failed: {ack_err:#}");
+                        }
                     } else {
                         warn!(path = %message.path.display(), "discord send failed: {err_str}");
                     }
@@ -357,10 +361,7 @@ async fn outgoing_loop(
             }
         }
 
-        sleep(Duration::from_millis(
-            config.daemon.poll_interval_ms.max(300),
-        ))
-        .await;
+        sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(300))).await;
     }
 }
 
