@@ -175,6 +175,9 @@ impl HeartbeatService {
             if let Some(target) = settings.target {
                 policy.target = target;
             }
+            if settings.to.is_some() {
+                policy.to = settings.to.clone();
+            }
         }
 
         let effective_prompt = match &file_settings {
@@ -572,6 +575,7 @@ async fn load_heartbeat_md(agent_root: &std::path::Path) -> Option<String> {
 #[derive(Debug, Default)]
 struct HeartbeatFileSettings {
     target: Option<HeartbeatTarget>,
+    to: Option<String>,
     body: String,
 }
 
@@ -611,20 +615,28 @@ fn parse_heartbeat_frontmatter(content: &str) -> HeartbeatFileSettings {
     let body = rest.strip_prefix('\n').unwrap_or(rest);
 
     let mut target = None;
+    let mut to = None;
 
     for line in frontmatter.lines() {
         let line = line.trim();
         if let Some((key, value)) = line.split_once(':') {
             let key = key.trim();
-            let value = value.trim();
-            if key == "target" {
-                target = parse_heartbeat_target(value);
+            let value = value.trim().trim_matches('"');
+            match key {
+                "target" => target = parse_heartbeat_target(value),
+                "to" => {
+                    if !value.is_empty() {
+                        to = Some(value.to_string());
+                    }
+                }
+                _ => {}
             }
         }
     }
 
     HeartbeatFileSettings {
         target,
+        to,
         body: body.to_string(),
     }
 }
@@ -802,6 +814,22 @@ mod tests {
         let settings = parse_heartbeat_frontmatter(content);
         assert!(settings.target.is_none());
         assert_eq!(settings.body, "Body here");
+    }
+
+    #[test]
+    fn frontmatter_target_and_to() {
+        let content = "---\ntarget: discord\nto: \"1486346863127822486\"\n---\nCheck status";
+        let settings = parse_heartbeat_frontmatter(content);
+        assert_eq!(settings.target, Some(HeartbeatTarget::Discord));
+        assert_eq!(settings.to.as_deref(), Some("1486346863127822486"));
+        assert_eq!(settings.body, "Check status");
+    }
+
+    #[test]
+    fn frontmatter_to_without_quotes() {
+        let content = "---\ntarget: slack\nto: C0123456789\n---\nBody";
+        let settings = parse_heartbeat_frontmatter(content);
+        assert_eq!(settings.to.as_deref(), Some("C0123456789"));
     }
 
     #[test]
