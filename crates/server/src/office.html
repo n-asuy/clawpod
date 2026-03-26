@@ -1486,6 +1486,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
             <div><strong>Agent:</strong> <span class="badge badge-blue">${escapeHtml(run.agent_id)}</span></div>
             <div><strong>Model:</strong> <span class="mono">${escapeHtml(run.model || '-')}</span></div>
             <div><strong>Provider:</strong> <span class="mono">${escapeHtml(run.provider || '-')}</span></div>
+            <div><strong>Think Level:</strong> <span class="mono">${escapeHtml(run.think_level || '-')}</span></div>
             <div><strong>Events:</strong> <span class="mono">${run.event_count != null ? run.event_count : events.length}</span></div>
             <div><strong>Session:</strong> <span class="mono text-dim" title="${escapeHtml(run.session_key)}">${truncate(run.session_key, 30)}</span></div>
             <div><strong>Created:</strong> <span class="text-dim">${fmtDateTime(run.created_at)}</span></div>

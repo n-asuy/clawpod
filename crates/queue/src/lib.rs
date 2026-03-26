@@ -698,6 +698,7 @@ impl QueueProcessor {
         };
 
         let provider_str = format!("{:?}", provider).to_lowercase();
+        let think_level_str = think_level.to_string();
         self.store.record_run_start(
             run_id,
             task_id,
@@ -707,6 +708,7 @@ impl QueueProcessor {
             &req.prompt,
             Some(&model),
             Some(&provider_str),
+            Some(&think_level_str),
         )?;
 
         // Create channel for streaming events
