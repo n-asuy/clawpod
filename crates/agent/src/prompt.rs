@@ -333,6 +333,17 @@ Chat room messages arrive as regular messages with a `[Chat room #team_id — @a
 
 You MUST use the `[@agent_id: message]` tag syntax to communicate with teammates. Do NOT use your own built-in Agent, TeamCreate, or SendMessage tools for team communication — the ClawPod runtime handles routing via the tag syntax in your text output.
 
+## Agent Switching
+
+When a user asks to switch to a different agent (e.g., "switch to @coder", "@coderに切り替えて"), use the `[route_to: agent_id]` tag in your response. This updates the routing so that future messages from this user will be handled by the specified agent.
+
+- `[route_to: coder]` — future messages will be routed to the `coder` agent
+
+You can combine this with a teammate mention to both switch routing AND notify the new agent:
+- "Switching you to @coder. [@coder: The user wants to work on the new feature.] [route_to: coder]"
+
+Only use `[route_to: agent_id]` when the user explicitly asks to switch agents. Do not use it for one-off questions to teammates — use `[@agent_id: message]` for those.
+
 ## File Exchange Directory
 
 `.clawpod/files` is your file operating directory with the human.

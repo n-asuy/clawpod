@@ -17,7 +17,10 @@ use domain::{
 use observer::FileEventSink;
 use plugins::{dispatch_event, transform_incoming, transform_outgoing, HookContext};
 use regex::Regex;
-use routing::{extract_chatroom_posts, find_team_for_agent, parse_agent_routing, resolve_binding};
+use routing::{
+    extract_chatroom_posts, extract_route_to, find_team_for_agent, parse_agent_routing,
+    resolve_binding, strip_route_to_tags,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use session::build_session_key;
@@ -534,7 +537,31 @@ impl QueueProcessor {
                     }
                 }
 
-                let display_text = convert_mentions_to_readable(&text, &agent_id);
+                // Handle [route_to: agent_id] — update routing affinity so future
+                // messages from this sender go to the specified agent.
+                if let Some(target_agent) = extract_route_to(&text) {
+                    if self.config.agents.contains_key(&target_agent)
+                        && !is_internal_channel(&event.channel)
+                    {
+                        info!(
+                            from = %agent_id,
+                            to = %target_agent,
+                            "route_to: updating routing affinity"
+                        );
+                        if let Err(err) = self.store.set_routing_affinity(
+                            &event.channel,
+                            &event.peer_id,
+                            &event.sender_id,
+                            &target_agent,
+                        ) {
+                            warn!(error = %err, "failed to update routing affinity via route_to");
+                        }
+                    }
+                }
+
+                let display_text = strip_route_to_tags(
+                    &convert_mentions_to_readable(&text, &agent_id),
+                );
                 let prepared = self
                     .prepare_outbound_payload(
                         &display_text,

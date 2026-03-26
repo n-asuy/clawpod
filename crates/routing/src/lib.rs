@@ -186,6 +186,20 @@ pub fn extract_chatroom_posts(
     posts
 }
 
+/// Extract `[route_to: agent_id]` tag from an agent's response.
+/// Returns the target agent_id if a valid tag is found.
+pub fn extract_route_to(response: &str) -> Option<String> {
+    let re = Regex::new(r"\[route_to:\s*(\S+?)\s*\]").expect("valid regex");
+    re.captures(response)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_lowercase()))
+}
+
+/// Strip `[route_to: agent_id]` tags from text before sending to the user.
+pub fn strip_route_to_tags(response: &str) -> String {
+    let re = Regex::new(r"\s*\[route_to:\s*\S+?\s*\]").expect("valid regex");
+    re.replace_all(response, "").trim().to_string()
+}
+
 pub fn extract_teammate_mentions(
     response: &str,
     current_agent_id: &str,
@@ -432,5 +446,52 @@ mod tests {
         );
         assert_eq!(mentions.len(), 1);
         assert_eq!(mentions[0].teammate_id, "reviewer");
+    }
+
+    // -- extract_route_to --
+
+    #[test]
+    fn extract_route_to_finds_tag() {
+        let result = extract_route_to("Switching to coder. [route_to: coder]");
+        assert_eq!(result, Some("coder".to_string()));
+    }
+
+    #[test]
+    fn extract_route_to_case_insensitive() {
+        let result = extract_route_to("[route_to: Reviewer]");
+        assert_eq!(result, Some("reviewer".to_string()));
+    }
+
+    #[test]
+    fn extract_route_to_none_when_absent() {
+        let result = extract_route_to("No routing tag here.");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn extract_route_to_with_extra_whitespace() {
+        let result = extract_route_to("[route_to:   sns-pdca  ]");
+        assert_eq!(result, Some("sns-pdca".to_string()));
+    }
+
+    // -- strip_route_to_tags --
+
+    #[test]
+    fn strip_route_to_tags_removes_tag() {
+        let result = strip_route_to_tags("Switching to coder. [route_to: coder]");
+        assert_eq!(result, "Switching to coder.");
+    }
+
+    #[test]
+    fn strip_route_to_tags_preserves_text_without_tag() {
+        let result = strip_route_to_tags("No tag here.");
+        assert_eq!(result, "No tag here.");
+    }
+
+    #[test]
+    fn strip_route_to_tags_removes_multiple() {
+        let result =
+            strip_route_to_tags("Hello [route_to: a] world [route_to: b]");
+        assert_eq!(result, "Hello world");
     }
 }
