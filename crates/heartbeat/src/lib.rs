@@ -7,7 +7,7 @@ pub mod policy;
 pub mod visibility;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use agent::{ensure_agent_workspace, ensure_session_workspace, PromptContext, SystemPromptBuilder};
@@ -23,7 +23,7 @@ use serde_json::json;
 use store::StateStore;
 use tokio::fs;
 use tokio::sync::watch;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use active_hours::is_within_active_hours;
@@ -51,13 +51,21 @@ impl HeartbeatLoopSettings {
     pub fn from_config(config: &RuntimeConfig) -> Self {
         Self {
             enabled: config.heartbeat.enabled,
-            interval_sec: resolve_global_interval(config).as_secs(),
+            interval_sec: resolve_tick_interval(config).as_secs(),
         }
     }
 
     pub fn interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.interval_sec.max(10))
     }
+}
+
+/// Per-agent schedule state, modeled after OpenClaw's HeartbeatAgentState.
+#[derive(Debug, Clone)]
+struct AgentSchedule {
+    interval: std::time::Duration,
+    last_run: Option<Instant>,
+    next_due: Instant,
 }
 
 #[derive(Clone)]
@@ -93,6 +101,8 @@ pub struct HeartbeatService {
     runner: Arc<dyn Runner>,
     store: StateStore,
     sink: FileEventSink,
+    /// Per-agent schedule state (OpenClaw-style per-agent timers).
+    schedules: Mutex<HashMap<String, AgentSchedule>>,
 }
 
 impl HeartbeatService {
@@ -107,22 +117,85 @@ impl HeartbeatService {
             runner,
             store,
             sink,
+            schedules: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Run heartbeat for all enabled agents.
+    /// Run heartbeat for agents that are due (per-agent scheduling).
     pub async fn run_scheduled_cycle(&self) -> CycleOutcome {
         let mut outcome = CycleOutcome::default();
+        let now = Instant::now();
         let agents = self.resolve_heartbeat_agents();
 
+        // Rebuild schedule map: add new agents, update intervals, remove stale ones.
+        {
+            let mut schedules = self.schedules.lock().expect("schedules lock poisoned");
+            let agent_ids: std::collections::HashSet<_> =
+                agents.iter().map(|(id, _)| id.clone()).collect();
+
+            // Remove agents no longer participating
+            schedules.retain(|id, _| agent_ids.contains(id));
+
+            // Add or update agents
+            for (agent_id, _) in &agents {
+                let interval = self
+                    .resolve_effective_policy(agent_id)
+                    .map(|p| p.every)
+                    .unwrap_or_else(|_| std::time::Duration::from_secs(1800));
+
+                schedules
+                    .entry(agent_id.clone())
+                    .and_modify(|sched| {
+                        // Update interval if config changed; keep next_due relative
+                        if sched.interval != interval {
+                            sched.interval = interval;
+                        }
+                    })
+                    .or_insert_with(|| AgentSchedule {
+                        interval,
+                        last_run: None,
+                        next_due: now, // due immediately on first appearance
+                    });
+            }
+        }
+
         for (agent_id, _agent) in &agents {
+            let is_due = {
+                let schedules = self.schedules.lock().expect("schedules lock poisoned");
+                schedules
+                    .get(agent_id)
+                    .map_or(false, |sched| now >= sched.next_due)
+            };
+
+            if !is_due {
+                continue;
+            }
+
+            info!(agent = %agent_id, "heartbeat due, running");
+
             match self.run_once(agent_id, HeartbeatRunReason::Scheduled).await {
-                Ok(view) => match view.status.as_str() {
-                    "ran" => outcome.ran += 1,
-                    "skipped" => outcome.skipped += 1,
-                    _ => outcome.failed += 1,
-                },
+                Ok(view) => {
+                    // Mark as ran and schedule next
+                    let mut schedules = self.schedules.lock().expect("schedules lock poisoned");
+                    if let Some(sched) = schedules.get_mut(agent_id) {
+                        sched.last_run = Some(Instant::now());
+                        sched.next_due = Instant::now() + sched.interval;
+                    }
+
+                    match view.status.as_str() {
+                        "ran" => outcome.ran += 1,
+                        "skipped" => outcome.skipped += 1,
+                        _ => outcome.failed += 1,
+                    }
+                }
                 Err(err) => {
+                    // Still advance the schedule to avoid tight retry loops
+                    let mut schedules = self.schedules.lock().expect("schedules lock poisoned");
+                    if let Some(sched) = schedules.get_mut(agent_id) {
+                        sched.last_run = Some(Instant::now());
+                        sched.next_due = Instant::now() + sched.interval;
+                    }
+
                     warn!(agent = %agent_id, error = %err, "heartbeat run failed");
                     outcome.failed += 1;
                 }
@@ -550,20 +623,49 @@ impl HeartbeatService {
     }
 }
 
-/// Resolve the global heartbeat interval from config.
-pub fn resolve_global_interval(config: &RuntimeConfig) -> std::time::Duration {
-    if let Some(defaults) = config
-        .agent_defaults
-        .as_ref()
-        .and_then(|d| d.heartbeat.as_ref())
-    {
-        if let Some(every) = &defaults.every {
-            if let Ok(dur) = config::parse_duration_str(every) {
-                return dur;
+/// Resolve the tick interval for the heartbeat loop.
+///
+/// Uses the minimum per-agent `every` so that the loop wakes often enough
+/// for every agent's schedule.  Falls back to agent_defaults, then the
+/// legacy global `interval_sec`.
+pub fn resolve_tick_interval(config: &RuntimeConfig) -> std::time::Duration {
+    let mut min_secs: Option<u64> = None;
+
+    // Check per-agent intervals
+    for agent in config.agents.values() {
+        if let Some(hb) = &agent.heartbeat {
+            if let Some(every) = &hb.every {
+                if let Ok(dur) = config::parse_duration_str(every) {
+                    let secs = dur.as_secs();
+                    min_secs = Some(min_secs.map_or(secs, |m: u64| m.min(secs)));
+                }
             }
         }
     }
-    std::time::Duration::from_secs(config.heartbeat.interval_sec.max(10))
+
+    // Fallback to agent_defaults.heartbeat.every
+    if min_secs.is_none() {
+        if let Some(defaults) = config
+            .agent_defaults
+            .as_ref()
+            .and_then(|d| d.heartbeat.as_ref())
+        {
+            if let Some(every) = &defaults.every {
+                if let Ok(dur) = config::parse_duration_str(every) {
+                    min_secs = Some(dur.as_secs());
+                }
+            }
+        }
+    }
+
+    // Fallback to legacy global interval_sec
+    let secs = min_secs.unwrap_or(config.heartbeat.interval_sec);
+    std::time::Duration::from_secs(secs.max(10))
+}
+
+/// Legacy alias for backward compatibility with tests.
+pub fn resolve_global_interval(config: &RuntimeConfig) -> std::time::Duration {
+    resolve_tick_interval(config)
 }
 
 async fn load_heartbeat_md(agent_root: &std::path::Path) -> Option<String> {
@@ -780,6 +882,61 @@ mod tests {
         assert!(HeartbeatRunReason::Cron.is_event_driven());
         assert!(HeartbeatRunReason::Hook.is_event_driven());
         assert!(HeartbeatRunReason::Wake.is_event_driven());
+    }
+
+    #[test]
+    fn resolve_tick_interval_uses_min_agent_every() {
+        let mut config = RuntimeConfig::default();
+        config.heartbeat.interval_sec = 3600;
+        config.agents.insert(
+            "fast".into(),
+            domain::AgentConfig {
+                name: "fast".into(),
+                model: "m".into(),
+                heartbeat: Some(domain::AgentHeartbeatConfig {
+                    every: Some("5m".into()),
+                    ..Default::default()
+                }),
+                ..default_agent()
+            },
+        );
+        config.agents.insert(
+            "slow".into(),
+            domain::AgentConfig {
+                name: "slow".into(),
+                model: "m".into(),
+                heartbeat: Some(domain::AgentHeartbeatConfig {
+                    every: Some("1h".into()),
+                    ..Default::default()
+                }),
+                ..default_agent()
+            },
+        );
+        let dur = resolve_tick_interval(&config);
+        // Should use the minimum: 5 minutes
+        assert_eq!(dur, std::time::Duration::from_secs(300));
+    }
+
+    #[test]
+    fn resolve_tick_interval_falls_back_to_legacy() {
+        let mut config = RuntimeConfig::default();
+        config.heartbeat.interval_sec = 600;
+        // No per-agent heartbeat configs
+        let dur = resolve_tick_interval(&config);
+        assert_eq!(dur, std::time::Duration::from_secs(600));
+    }
+
+    fn default_agent() -> domain::AgentConfig {
+        domain::AgentConfig {
+            name: String::new(),
+            provider: domain::ProviderKind::Mock,
+            model: String::new(),
+            think_level: None,
+            provider_id: None,
+            system_prompt: None,
+            prompt_file: None,
+            heartbeat: None,
+        }
     }
 
     // ── frontmatter parsing ──────────────────────────────────────
