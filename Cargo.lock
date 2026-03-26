@@ -864,6 +864,7 @@ dependencies = [
  "domain",
  "observer",
  "queue",
+ "routing",
  "serde",
  "serde_json",
  "session",

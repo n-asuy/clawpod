@@ -1,4 +1,6 @@
-use domain::{HeartbeatDirectPolicy, HeartbeatTarget};
+use std::collections::HashMap;
+
+use domain::{HeartbeatDirectPolicy, HeartbeatTarget, TeamConfig};
 use store::SessionSummary;
 
 use crate::policy::EffectiveHeartbeatPolicy;
@@ -11,11 +13,22 @@ pub struct DeliveryTarget {
     pub account_id: Option<String>,
 }
 
+/// Discriminated delivery strategy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryKind {
+    /// Deliver via outgoing message queue to an external channel.
+    Outbound(DeliveryTarget),
+    /// Deliver to the agent's team chatroom.
+    Chatroom { team_id: String },
+}
+
 /// Resolve where to deliver heartbeat output based on policy and session state.
 pub fn resolve_delivery_target(
     policy: &EffectiveHeartbeatPolicy,
     session: Option<&SessionSummary>,
-) -> Option<DeliveryTarget> {
+    agent_id: &str,
+    teams: &HashMap<String, TeamConfig>,
+) -> Option<DeliveryKind> {
     match policy.target {
         HeartbeatTarget::None => None,
 
@@ -37,7 +50,7 @@ pub fn resolve_delivery_target(
                 return None;
             }
 
-            Some(target)
+            Some(DeliveryKind::Outbound(target))
         }
 
         HeartbeatTarget::Telegram | HeartbeatTarget::Discord | HeartbeatTarget::Slack => {
@@ -49,11 +62,16 @@ pub fn resolve_delivery_target(
                 _ => unreachable!(),
             };
 
-            Some(DeliveryTarget {
+            Some(DeliveryKind::Outbound(DeliveryTarget {
                 channel: channel.to_string(),
                 recipient: recipient.clone(),
                 account_id: policy.account_id.clone(),
-            })
+            }))
+        }
+
+        HeartbeatTarget::Chatroom => {
+            let team_id = routing::find_team_for_agent(agent_id, teams)?;
+            Some(DeliveryKind::Chatroom { team_id })
         }
     }
 }
@@ -105,25 +123,48 @@ mod tests {
         }
     }
 
+    fn empty_teams() -> HashMap<String, TeamConfig> {
+        HashMap::new()
+    }
+
+    fn teams_with(agent_id: &str) -> HashMap<String, TeamConfig> {
+        let mut teams = HashMap::new();
+        teams.insert(
+            "dev".to_string(),
+            TeamConfig {
+                name: "Dev".to_string(),
+                agents: vec![agent_id.to_string(), "other".to_string()],
+                leader_agent: agent_id.to_string(),
+            },
+        );
+        teams
+    }
+
     #[test]
     fn target_none_returns_none() {
         let policy = base_policy(HeartbeatTarget::None);
-        assert!(resolve_delivery_target(&policy, None).is_none());
+        assert!(resolve_delivery_target(&policy, None, "default", &empty_teams()).is_none());
     }
 
     #[test]
     fn target_last_resolves_from_session() {
         let policy = base_policy(HeartbeatTarget::Last);
         let session = make_session("telegram", "C456");
-        let target = resolve_delivery_target(&policy, Some(&session)).unwrap();
-        assert_eq!(target.channel, "telegram");
-        assert_eq!(target.recipient, "C456");
+        let kind =
+            resolve_delivery_target(&policy, Some(&session), "default", &empty_teams()).unwrap();
+        match kind {
+            DeliveryKind::Outbound(t) => {
+                assert_eq!(t.channel, "telegram");
+                assert_eq!(t.recipient, "C456");
+            }
+            _ => panic!("expected Outbound"),
+        }
     }
 
     #[test]
     fn target_last_no_session_returns_none() {
         let policy = base_policy(HeartbeatTarget::Last);
-        assert!(resolve_delivery_target(&policy, None).is_none());
+        assert!(resolve_delivery_target(&policy, None, "default", &empty_teams()).is_none());
     }
 
     #[test]
@@ -142,22 +183,29 @@ mod tests {
             last_heartbeat_text: None,
             last_heartbeat_sent_at: None,
         };
-        assert!(resolve_delivery_target(&policy, Some(&session)).is_none());
+        assert!(
+            resolve_delivery_target(&policy, Some(&session), "default", &empty_teams()).is_none()
+        );
     }
 
     #[test]
     fn target_explicit_channel() {
         let mut policy = base_policy(HeartbeatTarget::Telegram);
         policy.to = Some("U789".into());
-        let target = resolve_delivery_target(&policy, None).unwrap();
-        assert_eq!(target.channel, "telegram");
-        assert_eq!(target.recipient, "U789");
+        let kind = resolve_delivery_target(&policy, None, "default", &empty_teams()).unwrap();
+        match kind {
+            DeliveryKind::Outbound(t) => {
+                assert_eq!(t.channel, "telegram");
+                assert_eq!(t.recipient, "U789");
+            }
+            _ => panic!("expected Outbound"),
+        }
     }
 
     #[test]
     fn target_explicit_channel_no_to_returns_none() {
         let policy = base_policy(HeartbeatTarget::Slack);
-        assert!(resolve_delivery_target(&policy, None).is_none());
+        assert!(resolve_delivery_target(&policy, None, "default", &empty_teams()).is_none());
     }
 
     #[test]
@@ -165,7 +213,9 @@ mod tests {
         let mut policy = base_policy(HeartbeatTarget::Last);
         policy.direct_policy = HeartbeatDirectPolicy::Block;
         let session = make_session("telegram", "C456");
-        assert!(resolve_delivery_target(&policy, Some(&session)).is_none());
+        assert!(
+            resolve_delivery_target(&policy, Some(&session), "default", &empty_teams()).is_none()
+        );
     }
 
     #[test]
@@ -174,7 +224,22 @@ mod tests {
         policy.direct_policy = HeartbeatDirectPolicy::Block;
         let mut session = make_session("telegram", "C456");
         session.last_chat_type = Some("group".into());
-        let target = resolve_delivery_target(&policy, Some(&session));
-        assert!(target.is_some());
+        let kind =
+            resolve_delivery_target(&policy, Some(&session), "default", &empty_teams());
+        assert!(kind.is_some());
+    }
+
+    #[test]
+    fn target_chatroom_resolves_team() {
+        let policy = base_policy(HeartbeatTarget::Chatroom);
+        let teams = teams_with("default");
+        let kind = resolve_delivery_target(&policy, None, "default", &teams).unwrap();
+        assert_eq!(kind, DeliveryKind::Chatroom { team_id: "dev".to_string() });
+    }
+
+    #[test]
+    fn target_chatroom_no_team_returns_none() {
+        let policy = base_policy(HeartbeatTarget::Chatroom);
+        assert!(resolve_delivery_target(&policy, None, "default", &empty_teams()).is_none());
     }
 }

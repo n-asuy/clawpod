@@ -366,6 +366,7 @@ pub enum HeartbeatTarget {
     Telegram,
     Discord,
     Slack,
+    Chatroom,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -605,6 +606,7 @@ mod tests {
             (HeartbeatTarget::Telegram, "\"telegram\""),
             (HeartbeatTarget::Discord, "\"discord\""),
             (HeartbeatTarget::Slack, "\"slack\""),
+            (HeartbeatTarget::Chatroom, "\"chatroom\""),
         ] {
             let serialized = serde_json::to_string(&variant).unwrap();
             assert_eq!(serialized, json_str);

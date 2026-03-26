@@ -14,6 +14,7 @@ config = { path = "../config" }
 domain = { path = "../domain" }
 observer = { path = "../observer" }
 queue = { path = "../queue" }
+routing = { path = "../routing" }
 session = { path = "../session" }
 store = { path = "../store" }
 serde = { version = "1.0", features = ["derive"] }

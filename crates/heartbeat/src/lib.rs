@@ -235,7 +235,12 @@ impl HeartbeatService {
                 } else {
                     self.store.get_session(&session_key)?
                 };
-                let delivery_target = resolve_delivery_target(&policy, delivery_session.as_ref());
+                let delivery_target = resolve_delivery_target(
+                    &policy,
+                    delivery_session.as_ref(),
+                    agent_id,
+                    &self.config.teams,
+                );
 
                 // Duplicate suppression (only for non-event-driven reasons)
                 let is_dup = !reason.is_event_driven()
@@ -249,10 +254,18 @@ impl HeartbeatService {
                         (NormalizeResult::AckOnly | NormalizeResult::OkWithText(_), _) => {
                             (HeartbeatDeliveryMode::Suppressed, None, None)
                         }
-                        (NormalizeResult::Alert(_), Some(target)) => (
+                        (NormalizeResult::Alert(_), Some(delivery::DeliveryKind::Outbound(t))) => (
                             HeartbeatDeliveryMode::Delivered,
-                            Some(target.channel.clone()),
-                            Some(target.recipient.clone()),
+                            Some(t.channel.clone()),
+                            Some(t.recipient.clone()),
+                        ),
+                        (
+                            NormalizeResult::Alert(_),
+                            Some(delivery::DeliveryKind::Chatroom { team_id }),
+                        ) => (
+                            HeartbeatDeliveryMode::Delivered,
+                            Some("chatroom".to_string()),
+                            Some(team_id.clone()),
                         ),
                         (NormalizeResult::Alert(_), None) => {
                             (HeartbeatDeliveryMode::NoTarget, None, None)
@@ -262,29 +275,66 @@ impl HeartbeatService {
 
                 let delivered = delivery_mode == HeartbeatDeliveryMode::Delivered;
 
-                // Enqueue outbound if delivering
+                // Deliver heartbeat output
                 if delivered {
-                    if let (Some(ch), Some(recip)) = (&delivery_channel, &delivery_recipient) {
-                        let delivery_text = match &normalized {
-                            NormalizeResult::Alert(text) => text.as_str(),
-                            _ => output.as_str(),
-                        };
-                        if let Err(err) = queue::enqueue_outgoing_message(
-                            &self.config,
-                            ch,
-                            agent_id,
-                            recip,
-                            delivery_text,
-                            effective_prompt,
-                            &format!("heartbeat-{}", Uuid::new_v4().simple()),
-                            agent_id,
-                            vec![],
-                            HashMap::new(),
-                        )
-                        .await
-                        {
-                            warn!(agent = %agent_id, error = %err, "failed to enqueue heartbeat delivery");
+                    let delivery_text = match &normalized {
+                        NormalizeResult::Alert(text) => text.as_str(),
+                        _ => output.as_str(),
+                    };
+
+                    match &delivery_target {
+                        Some(delivery::DeliveryKind::Outbound(target)) => {
+                            if let Err(err) = queue::enqueue_outgoing_message(
+                                &self.config,
+                                &target.channel,
+                                agent_id,
+                                &target.recipient,
+                                delivery_text,
+                                effective_prompt,
+                                &format!("heartbeat-{}", Uuid::new_v4().simple()),
+                                agent_id,
+                                vec![],
+                                HashMap::new(),
+                            )
+                            .await
+                            {
+                                warn!(agent = %agent_id, error = %err, "failed to enqueue heartbeat delivery");
+                            }
                         }
+                        Some(delivery::DeliveryKind::Chatroom { team_id }) => {
+                            if let Err(err) =
+                                self.store
+                                    .record_chatroom_message(team_id, agent_id, delivery_text)
+                            {
+                                warn!(agent = %agent_id, error = %err, "failed to record heartbeat chatroom message");
+                            }
+                            if let Some(team) = self.config.teams.get(team_id) {
+                                for teammate_id in &team.agents {
+                                    if teammate_id == agent_id
+                                        || !self.config.agents.contains_key(teammate_id)
+                                    {
+                                        continue;
+                                    }
+                                    if let Err(err) = queue::enqueue_chatroom_message(
+                                        &self.config,
+                                        team_id,
+                                        teammate_id,
+                                        agent_id,
+                                        delivery_text,
+                                    )
+                                    .await
+                                    {
+                                        warn!(
+                                            agent = %agent_id,
+                                            teammate = %teammate_id,
+                                            error = %err,
+                                            "failed to enqueue heartbeat chatroom message"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        None => {}
                     }
                 }
 
