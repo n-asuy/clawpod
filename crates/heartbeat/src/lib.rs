@@ -16,7 +16,7 @@ use chrono::Utc;
 use config::RuntimeConfig;
 use domain::{
     AgentConfig, HeartbeatDeliveryMode, HeartbeatRunReason, HeartbeatRunStatus, HeartbeatRunView,
-    RunRequest, Runner,
+    HeartbeatTarget, RunRequest, Runner,
 };
 use observer::FileEventSink;
 use serde_json::json;
@@ -147,7 +147,7 @@ impl HeartbeatService {
             .context("agent not found")?
             .clone();
 
-        let policy = self.resolve_effective_policy(agent_id)?;
+        let mut policy = self.resolve_effective_policy(agent_id)?;
 
         // Active hours gating (skip for manual and event-driven runs)
         if reason == HeartbeatRunReason::Scheduled
@@ -166,11 +166,19 @@ impl HeartbeatService {
             &agent_root,
         )?;
 
-        // Load HEARTBEAT.md. If present and non-empty, use it.
-        // If absent or effectively empty, fall back to the policy default prompt.
-        let heartbeat_prompt = load_heartbeat_md(&agent_root).await;
-        let effective_prompt = match &heartbeat_prompt {
-            Some(content) if !is_effectively_empty(content) => content.as_str(),
+        // Load heartbeat.md and parse frontmatter overrides + body.
+        let heartbeat_raw = load_heartbeat_md(&agent_root).await;
+        let file_settings = heartbeat_raw.as_deref().map(parse_heartbeat_frontmatter);
+
+        // File frontmatter overrides config policy
+        if let Some(ref settings) = file_settings {
+            if let Some(target) = settings.target {
+                policy.target = target;
+            }
+        }
+
+        let effective_prompt = match &file_settings {
+            Some(settings) if !is_effectively_empty(&settings.body) => settings.body.as_str(),
             _ => &policy.prompt,
         };
 
@@ -560,6 +568,79 @@ async fn load_heartbeat_md(agent_root: &std::path::Path) -> Option<String> {
     fs::read_to_string(&path).await.ok()
 }
 
+/// Settings parsed from heartbeat.md YAML frontmatter.
+#[derive(Debug, Default)]
+struct HeartbeatFileSettings {
+    target: Option<HeartbeatTarget>,
+    body: String,
+}
+
+/// Parse optional YAML frontmatter from heartbeat.md content.
+///
+/// ```markdown
+/// ---
+/// target: chatroom
+/// ---
+///
+/// Prompt body here.
+/// ```
+fn parse_heartbeat_frontmatter(content: &str) -> HeartbeatFileSettings {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return HeartbeatFileSettings {
+            body: content.to_string(),
+            ..Default::default()
+        };
+    }
+
+    let after_open = &trimmed[3..];
+    let after_open = after_open.strip_prefix('\n').unwrap_or(after_open);
+
+    // Find closing --- (could be at start if frontmatter is empty)
+    let (frontmatter, rest) = if after_open.starts_with("---") {
+        ("", &after_open[3..])
+    } else if let Some(pos) = after_open.find("\n---") {
+        (&after_open[..pos], &after_open[pos + 4..])
+    } else {
+        return HeartbeatFileSettings {
+            body: content.to_string(),
+            ..Default::default()
+        };
+    };
+
+    let body = rest.strip_prefix('\n').unwrap_or(rest);
+
+    let mut target = None;
+
+    for line in frontmatter.lines() {
+        let line = line.trim();
+        if let Some((key, value)) = line.split_once(':') {
+            let key = key.trim();
+            let value = value.trim();
+            if key == "target" {
+                target = parse_heartbeat_target(value);
+            }
+        }
+    }
+
+    HeartbeatFileSettings {
+        target,
+        body: body.to_string(),
+    }
+}
+
+fn parse_heartbeat_target(s: &str) -> Option<HeartbeatTarget> {
+    match s {
+        "none" => Some(HeartbeatTarget::None),
+        "last" => Some(HeartbeatTarget::Last),
+        "telegram" => Some(HeartbeatTarget::Telegram),
+        "discord" => Some(HeartbeatTarget::Discord),
+        "slack" => Some(HeartbeatTarget::Slack),
+        "chatroom" => Some(HeartbeatTarget::Chatroom),
+        _ => None,
+    }
+}
+
 fn is_effectively_empty(content: &str) -> bool {
     content.lines().all(|line| {
         let trimmed = line.trim();
@@ -687,5 +768,54 @@ mod tests {
         assert!(HeartbeatRunReason::Cron.is_event_driven());
         assert!(HeartbeatRunReason::Hook.is_event_driven());
         assert!(HeartbeatRunReason::Wake.is_event_driven());
+    }
+
+    // ── frontmatter parsing ──────────────────────────────────────
+
+    #[test]
+    fn frontmatter_target_chatroom() {
+        let content = "---\ntarget: chatroom\n---\nCheck status";
+        let settings = parse_heartbeat_frontmatter(content);
+        assert_eq!(settings.target, Some(HeartbeatTarget::Chatroom));
+        assert_eq!(settings.body, "Check status");
+    }
+
+    #[test]
+    fn frontmatter_target_discord() {
+        let content = "---\ntarget: discord\n---\nPing users";
+        let settings = parse_heartbeat_frontmatter(content);
+        assert_eq!(settings.target, Some(HeartbeatTarget::Discord));
+        assert_eq!(settings.body, "Ping users");
+    }
+
+    #[test]
+    fn frontmatter_no_frontmatter_returns_body() {
+        let content = "Just a prompt with no frontmatter";
+        let settings = parse_heartbeat_frontmatter(content);
+        assert!(settings.target.is_none());
+        assert_eq!(settings.body, content);
+    }
+
+    #[test]
+    fn frontmatter_empty_frontmatter() {
+        let content = "---\n---\nBody here";
+        let settings = parse_heartbeat_frontmatter(content);
+        assert!(settings.target.is_none());
+        assert_eq!(settings.body, "Body here");
+    }
+
+    #[test]
+    fn frontmatter_unknown_target_ignored() {
+        let content = "---\ntarget: carrier-pigeon\n---\nBody";
+        let settings = parse_heartbeat_frontmatter(content);
+        assert!(settings.target.is_none());
+    }
+
+    #[test]
+    fn frontmatter_preserves_body_with_comments() {
+        let content = "---\ntarget: chatroom\n---\n# Heartbeat\n\n<!-- info -->\n\nDo the thing";
+        let settings = parse_heartbeat_frontmatter(content);
+        assert_eq!(settings.target, Some(HeartbeatTarget::Chatroom));
+        assert!(settings.body.contains("Do the thing"));
     }
 }
