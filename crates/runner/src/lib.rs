@@ -79,6 +79,8 @@ impl Runner for CliRunner {
 
         let is_codex = matches!(provider, ProviderKind::Openai)
             || is_openai_harness(&request.metadata);
+        let is_claude = matches!(provider, ProviderKind::Anthropic)
+            || is_anthropic_harness(&request.metadata);
         let request_metadata = request.metadata.clone();
 
         let run_id_clone = run_id.clone();
@@ -96,6 +98,8 @@ impl Runner for CliRunner {
 
                     let event = if is_codex {
                         parse_codex_jsonl_event(&line, &run_id_clone, seq)
+                    } else if is_claude {
+                        parse_claude_stream_event(&line, &run_id_clone, seq)
                     } else {
                         Some(RunEvent {
                             run_id: run_id_clone.clone(),
@@ -135,13 +139,19 @@ impl Runner for CliRunner {
 
         let exit_code = status.code().unwrap_or(-1);
 
-        let mut text = stdout.clone();
-        if is_codex {
-            text = extract_codex_text(&stdout).unwrap_or_else(|| {
+        let text = if is_codex {
+            extract_codex_text(&stdout).unwrap_or_else(|| {
                 warn!("codex json parse fallback to raw stdout");
                 stdout.clone()
-            });
-        }
+            })
+        } else if is_claude {
+            extract_claude_result_text(&stdout).unwrap_or_else(|| {
+                warn!("claude stream-json parse fallback to raw stdout");
+                stdout.clone()
+            })
+        } else {
+            stdout.clone()
+        };
 
         Ok(RunResult {
             text: text.trim().to_string(),
@@ -343,6 +353,167 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
+fn is_anthropic_harness(metadata: &std::collections::HashMap<String, String>) -> bool {
+    metadata
+        .get("custom_harness")
+        .is_some_and(|h| h == "anthropic")
+}
+
+// ---------------------------------------------------------------------------
+// Claude CLI stream-json event parsing
+// ---------------------------------------------------------------------------
+
+fn parse_claude_stream_event(line: &str, run_id: &str, seq: u32) -> Option<RunEvent> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let event_type_str = value
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let now = Utc::now().to_rfc3339();
+
+    match event_type_str {
+        "assistant" => {
+            let message = value.get("message")?;
+            let content = message.get("content").and_then(|c| c.as_array())?;
+            // Each assistant event carries one or more content blocks.
+            // Emit an event for the last (newest) content block.
+            let block = content.last()?;
+            let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+
+            match block_type {
+                "thinking" => {
+                    let text = block
+                        .get("thinking")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    Some(RunEvent {
+                        run_id: run_id.to_string(),
+                        seq,
+                        timestamp: now,
+                        event_type: RunEventType::Thinking,
+                        data: serde_json::json!({ "text": truncate_str(text, 2000) }),
+                    })
+                }
+                "tool_use" => {
+                    let name = block
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let tool_id = block
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let input = block.get("input");
+                    Some(RunEvent {
+                        run_id: run_id.to_string(),
+                        seq,
+                        timestamp: now,
+                        event_type: RunEventType::ToolCall,
+                        data: serde_json::json!({
+                            "name": name,
+                            "call_id": tool_id,
+                            "arguments": input,
+                            "phase": "completed",
+                        }),
+                    })
+                }
+                "text" => {
+                    let text = block
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    Some(RunEvent {
+                        run_id: run_id.to_string(),
+                        seq,
+                        timestamp: now,
+                        event_type: RunEventType::AgentMessage,
+                        data: serde_json::json!({
+                            "text": text,
+                            "phase": "completed",
+                        }),
+                    })
+                }
+                _ => None,
+            }
+        }
+        "user" => {
+            // Tool results from Claude
+            let message = value.get("message")?;
+            let content = message.get("content").and_then(|c| c.as_array())?;
+            let block = content.last()?;
+            let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+
+            if block_type == "tool_result" {
+                let tool_id = block
+                    .get("tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let output = block
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let is_error = block
+                    .get("is_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                Some(RunEvent {
+                    run_id: run_id.to_string(),
+                    seq,
+                    timestamp: now,
+                    event_type: RunEventType::ToolResult,
+                    data: serde_json::json!({
+                        "call_id": tool_id,
+                        "output": truncate_str(output, 4000),
+                        "is_error": is_error,
+                    }),
+                })
+            } else {
+                None
+            }
+        }
+        "result" => {
+            let usage = value.get("usage");
+            let cost = value.get("total_cost_usd");
+            let duration = value.get("duration_ms");
+            let num_turns = value.get("num_turns");
+            Some(RunEvent {
+                run_id: run_id.to_string(),
+                seq,
+                timestamp: now,
+                event_type: RunEventType::Completed,
+                data: serde_json::json!({
+                    "usage": usage,
+                    "total_cost_usd": cost,
+                    "duration_ms": duration,
+                    "num_turns": num_turns,
+                }),
+            })
+        }
+        // Skip system init, rate_limit_event, etc.
+        _ => None,
+    }
+}
+
+/// Extract the final result text from Claude CLI stream-json output.
+fn extract_claude_result_text(jsonl: &str) -> Option<String> {
+    for line in jsonl.lines().rev() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let event_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if event_type == "result" {
+            return value
+                .get("result")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Mock runner
 // ---------------------------------------------------------------------------
@@ -401,6 +572,9 @@ fn build_claude_command(request: &RunRequest) -> (String, Vec<String>) {
     if request.continue_session {
         args.push("-c".to_string());
     }
+    args.push("--output-format".to_string());
+    args.push("stream-json".to_string());
+    args.push("--verbose".to_string());
     args.push("-p".to_string());
     args.push(request.prompt.clone());
 
@@ -604,5 +778,67 @@ mod tests {
         let jsonl = r#"{"type":"item.completed","item":{"type":"function_call","name":"shell"}}
 {"type":"item.completed","item":{"type":"agent_message","text":"done"}}"#;
         assert_eq!(extract_codex_text(jsonl), Some("done".to_string()));
+    }
+
+    // Claude stream-json tests
+
+    #[test]
+    fn parse_claude_assistant_text() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello world"}]}}"#;
+        let event = parse_claude_stream_event(line, "run-1", 1).unwrap();
+        assert_eq!(event.event_type, RunEventType::AgentMessage);
+        assert_eq!(event.data["text"], "hello world");
+    }
+
+    #[test]
+    fn parse_claude_thinking() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think about this...","signature":"sig"}]}}"#;
+        let event = parse_claude_stream_event(line, "run-1", 1).unwrap();
+        assert_eq!(event.event_type, RunEventType::Thinking);
+        assert!(event.data["text"].as_str().unwrap().contains("Let me think"));
+    }
+
+    #[test]
+    fn parse_claude_tool_use() {
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_123","name":"Read","input":{"file_path":"/tmp/test"}}]}}"#;
+        let event = parse_claude_stream_event(line, "run-1", 2).unwrap();
+        assert_eq!(event.event_type, RunEventType::ToolCall);
+        assert_eq!(event.data["name"], "Read");
+        assert_eq!(event.data["call_id"], "toolu_123");
+    }
+
+    #[test]
+    fn parse_claude_tool_result() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"file contents here","is_error":false,"tool_use_id":"toolu_123"}]}}"#;
+        let event = parse_claude_stream_event(line, "run-1", 3).unwrap();
+        assert_eq!(event.event_type, RunEventType::ToolResult);
+        assert_eq!(event.data["call_id"], "toolu_123");
+        assert!(event.data["output"].as_str().unwrap().contains("file contents"));
+    }
+
+    #[test]
+    fn parse_claude_result() {
+        let line = r#"{"type":"result","subtype":"success","result":"final answer","total_cost_usd":0.05,"duration_ms":3000,"num_turns":2,"usage":{"input_tokens":100,"output_tokens":50}}"#;
+        let event = parse_claude_stream_event(line, "run-1", 4).unwrap();
+        assert_eq!(event.event_type, RunEventType::Completed);
+        assert_eq!(event.data["total_cost_usd"], 0.05);
+        assert_eq!(event.data["num_turns"], 2);
+    }
+
+    #[test]
+    fn parse_claude_system_init_skipped() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"abc"}"#;
+        let event = parse_claude_stream_event(line, "run-1", 1);
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn extract_claude_result_text_works() {
+        let jsonl = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}
+{"type":"result","subtype":"success","result":"final text","duration_ms":1000}"#;
+        assert_eq!(
+            extract_claude_result_text(jsonl),
+            Some("final text".to_string())
+        );
     }
 }

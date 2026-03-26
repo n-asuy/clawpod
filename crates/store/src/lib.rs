@@ -123,6 +123,8 @@ struct RunRecord {
     event_count: Option<u32>,
     #[serde(default)]
     stderr: Option<String>,
+    #[serde(default)]
+    think_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,6 +292,7 @@ impl StateStore {
         prompt: &str,
         model: Option<&str>,
         provider: Option<&str>,
+        think_level: Option<&str>,
     ) -> Result<()> {
         let now = now_rfc3339();
         let mut snapshot = self.lock_snapshot()?;
@@ -315,6 +318,7 @@ impl StateStore {
                 provider: provider.map(ToString::to_string),
                 event_count: None,
                 stderr: None,
+                think_level: think_level.map(ToString::to_string),
             },
         );
         self.persist_locked(&snapshot)
@@ -374,6 +378,7 @@ impl StateStore {
                 "provider": run.provider,
                 "event_count": run.event_count,
                 "stderr": run.stderr,
+                "think_level": run.think_level,
             })
         }))
     }
@@ -769,6 +774,7 @@ impl StateStore {
                     "model": run.model,
                     "provider": run.provider,
                     "event_count": run.event_count,
+                    "think_level": run.think_level,
                 })
             })
             .collect())
