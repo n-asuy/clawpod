@@ -6,10 +6,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  BINARY_NAME: clawpod
-  REMOTE_HOST: REDACTED
-  REMOTE_USER: root
-  REMOTE_BIN_PATH: /usr/local/bin/clawpod
 
 jobs:
   test:
@@ -38,21 +34,21 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.HETZNER_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ env.REMOTE_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
 
       - name: Transfer binary
         run: |
           scp -i ~/.ssh/deploy_key \
             target/release/runtime \
-            ${{ env.REMOTE_USER }}@${{ env.REMOTE_HOST }}:/tmp/clawpod_new
+            root@${{ secrets.DEPLOY_HOST }}:/tmp/clawpod_new
 
       - name: Deploy and restart
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ env.REMOTE_USER }}@${{ env.REMOTE_HOST }} << 'DEPLOY'
+          ssh -i ~/.ssh/deploy_key root@${{ secrets.DEPLOY_HOST }} << 'DEPLOY'
             set -euo pipefail
             systemctl stop clawpod
-            mv /tmp/clawpod_new ${{ env.REMOTE_BIN_PATH }}
-            chmod +x ${{ env.REMOTE_BIN_PATH }}
+            mv /tmp/clawpod_new /usr/local/bin/clawpod
+            chmod +x /usr/local/bin/clawpod
             systemctl start clawpod
             sleep 2
             systemctl is-active clawpod
