@@ -1996,6 +1996,7 @@ dependencies = [
  "chrono",
  "domain",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
