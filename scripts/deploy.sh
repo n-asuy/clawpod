@@ -13,6 +13,7 @@ echo "==> Deploying branch '${BRANCH}' to ${DEPLOY_USER}@${DEPLOY_HOST}"
 
 ssh "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s "${BRANCH}" "${DEPLOY_SRC_DIR}" "${BIN_PATH}" "${SERVICE}" <<'REMOTE'
 set -euo pipefail
+source "$HOME/.cargo/env" 2>/dev/null || true
 BRANCH="$1"
 SRC_DIR="$2"
 BIN_PATH="$3"
@@ -29,7 +30,7 @@ cargo build --release -p runtime
 
 echo "--- restart service"
 systemctl stop "${SERVICE}"
-cp target/release/runtime "${BIN_PATH}"
+cp target/release/clawpod "${BIN_PATH}"
 chmod +x "${BIN_PATH}"
 systemctl start "${SERVICE}"
 
