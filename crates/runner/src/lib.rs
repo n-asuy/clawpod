@@ -68,6 +68,7 @@ impl Runner for CliRunner {
         }
 
         let mut child = command
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
@@ -88,44 +89,83 @@ impl Runner for CliRunner {
             let mut stdout_lines = Vec::new();
             let mut seq: u32 = 0;
 
-            // Stream stdout line-by-line
+            // Read stdout and stderr concurrently, and also watch for child
+            // exit. On some Linux/Tokio combinations the edge-triggered epoll
+            // notification for a closed pipe can be lost when the child exits
+            // before the first read is polled, causing `next_line()` to hang
+            // indefinitely. Racing against `child.wait()` prevents that.
+            // Spawn stderr collection in a separate task so stdout and stderr
+            // are drained concurrently (avoids pipe-buffer deadlock).
+            let stderr_handle = tokio::spawn(async move {
+                match child_stderr {
+                    Some(mut s) => {
+                        let mut buf = Vec::new();
+                        let _ = tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf).await;
+                        buf
+                    }
+                    None => Vec::new(),
+                }
+            });
+
             if let Some(stdout) = child_stdout {
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    stdout_lines.push(line.clone());
-                    seq += 1;
 
-                    let event = if is_codex {
-                        parse_codex_jsonl_event(&line, &run_id_clone, seq)
-                    } else if is_claude {
-                        parse_claude_stream_event(&line, &run_id_clone, seq)
-                    } else {
-                        Some(RunEvent {
-                            run_id: run_id_clone.clone(),
-                            seq,
-                            timestamp: Utc::now().to_rfc3339(),
-                            event_type: RunEventType::TextChunk,
-                            data: serde_json::json!({ "text": line }),
-                        })
-                    };
-                    if let Some(ev) = event {
-                        let _ = tx.send(ev).await;
+                // Read stdout line-by-line with a periodic check for child exit.
+                // On some Linux/Tokio combinations, pipe EOF notification via
+                // edge-triggered epoll can be lost when the child exits before
+                // the first read is polled.  Polling try_wait() avoids relying
+                // on SIGCHLD delivery.
+                loop {
+                    tokio::select! {
+                        biased;
+                        result = lines.next_line() => {
+                            match result {
+                                Ok(Some(line)) => {
+                                    stdout_lines.push(line.clone());
+                                    seq += 1;
+                                    let event = if is_codex {
+                                        parse_codex_jsonl_event(&line, &run_id_clone, seq)
+                                    } else if is_claude {
+                                        parse_claude_stream_event(&line, &run_id_clone, seq)
+                                    } else {
+                                        Some(RunEvent {
+                                            run_id: run_id_clone.clone(),
+                                            seq,
+                                            timestamp: Utc::now().to_rfc3339(),
+                                            event_type: RunEventType::TextChunk,
+                                            data: serde_json::json!({ "text": line }),
+                                        })
+                                    };
+                                    if let Some(ev) = event {
+                                        let _ = tx.send(ev).await;
+                                    }
+                                }
+                                _ => break,
+                            }
+                        }
+                        _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                            // Periodic child-exit check via non-blocking waitpid
+                            if let Ok(Some(_)) = child.try_wait() {
+                                // Child exited; drain remaining buffered lines
+                                let drain = async {
+                                    while let Ok(Some(line)) = lines.next_line().await {
+                                        stdout_lines.push(line);
+                                    }
+                                };
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(3),
+                                    drain,
+                                ).await;
+                                break;
+                            }
+                        }
                     }
                 }
             }
 
-            // Collect stderr
-            let stderr = match child_stderr {
-                Some(mut s) => {
-                    let mut buf = Vec::new();
-                    tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf).await?;
-                    buf
-                }
-                None => Vec::new(),
-            };
-
             let status = child.wait().await?;
+            let stderr = stderr_handle.await.unwrap_or_default();
 
             let stdout_str = stdout_lines.join("\n");
             let stderr_str = String::from_utf8_lossy(&stderr).to_string();
