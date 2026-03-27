@@ -62,9 +62,9 @@ impl Runner for CliRunner {
         // Use std::process (blocking) via spawn_blocking to avoid Tokio's
         // SIGCHLD-based Child::wait() which is unreliable in Linux daemon
         // contexts. Stdout/stderr are captured to temp files.
-        let stdout_file = tempfile::NamedTempFile::new()
+        let stdout_file = tempfile::NamedTempFile::new_in(&request.working_directory)
             .context("failed to create stdout tempfile")?;
-        let stderr_file = tempfile::NamedTempFile::new()
+        let stderr_file = tempfile::NamedTempFile::new_in(&request.working_directory)
             .context("failed to create stderr tempfile")?;
 
         let stdout_path = stdout_file.path().to_path_buf();
