@@ -43,27 +43,15 @@ cargo build --release -p runtime
 
 ## Deploy
 
-Hetzner server: `REDACTED` (clawpod)
-Tailscale: `https://clawpod.taila1d3cf.ts.net/office`
+Pushing to `main` triggers GitHub Actions (`.github/workflows/deploy.yml`):
+1. `cargo test`
+2. `cargo build --release -p runtime`
+3. Transfer binary to server via SCP
+4. Restart systemd service
 
-**After pushing changes to main, always deploy to Hetzner:**
+Server credentials are stored in GitHub Secrets (`HETZNER_SSH_KEY`, `DEPLOY_HOST`).
 
-```sh
-ssh root@REDACTED "source /root/.cargo/env && \
-  cd /opt/clawpod-src && git pull && \
-  cargo build --release -p runtime && \
-  systemctl stop clawpod && \
-  sleep 2 && \
-  pkill clawpod 2>/dev/null; sleep 1 && \
-  rm -f /usr/local/bin/clawpod && \
-  cp /opt/clawpod-src/target/release/clawpod /usr/local/bin/clawpod && \
-  chmod +x /usr/local/bin/clawpod && \
-  systemctl start clawpod && \
-  sleep 2 && \
-  systemctl status clawpod --no-pager"
-```
-
-Or use the `hetzner-deploy` skill.
+For initial server setup, use the `hetzner-deploy` skill.
 
 ## Office UI
 
