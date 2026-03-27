@@ -285,6 +285,14 @@ impl HeartbeatService {
 
         let system_prompt = self.build_system_prompt(&session_dir, agent_id, &policy)?;
 
+        // Pass system prompt via metadata so the runner sends it as
+        // `--system-prompt` (system role) instead of concatenating it
+        // into `-p` (user role) where it would accumulate in history.
+        let mut metadata = HashMap::new();
+        if !system_prompt.trim().is_empty() {
+            metadata.insert("system_preamble".to_string(), system_prompt);
+        }
+
         // Build run request
         let run_request = RunRequest {
             run_id: Uuid::new_v4(),
@@ -295,9 +303,9 @@ impl HeartbeatService {
             model: model.to_string(),
             think_level,
             working_directory: session_dir.to_string_lossy().to_string(),
-            prompt: format!("{system_prompt}\n\n{effective_prompt}"),
+            prompt: effective_prompt.to_string(),
             continue_session: !policy.isolated_session,
-            metadata: HashMap::new(),
+            metadata,
         };
 
         // Store the session
