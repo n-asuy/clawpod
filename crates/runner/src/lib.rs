@@ -102,7 +102,6 @@ impl Runner for CliRunner {
         // Use std::process (blocking) via spawn_blocking to avoid Tokio's
         // SIGCHLD-based Child::wait() which is unreliable on some Linux
         // daemon configurations.
-        let program_name = program.clone();
         let status = tokio::task::spawn_blocking(move || {
             let mut command = std::process::Command::new("sh");
             command
