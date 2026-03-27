@@ -5,7 +5,6 @@ use chrono::Utc;
 use domain::{ProviderKind, RunEvent, RunEventType, RunRequest, RunResult, Runner};
 use serde_json::Value;
 use tokio::fs;
-use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 use tracing::warn;
@@ -90,20 +89,7 @@ impl Runner for CliRunner {
             stderr_path.display(),
         );
 
-        let mut command = Command::new("sh");
-        command
-            .arg("-c")
-            .arg(&shell_cmd)
-            .current_dir(&request.working_directory);
-        for (key, value) in envs {
-            command.env(key, value);
-        }
-
-        let mut child = command
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| format!("failed to spawn runner command: {program}"))?;
+        let working_directory = request.working_directory.clone();
 
         let is_codex = matches!(provider, ProviderKind::Openai)
             || is_openai_harness(&request.metadata);
@@ -112,8 +98,33 @@ impl Runner for CliRunner {
         let request_metadata = request.metadata.clone();
 
         let run_id_clone = run_id.clone();
+
+        // Use std::process (blocking) via spawn_blocking to avoid Tokio's
+        // SIGCHLD-based Child::wait() which is unreliable on some Linux
+        // daemon configurations.
+        let program_name = program.clone();
+        let status = tokio::task::spawn_blocking(move || {
+            let mut command = std::process::Command::new("sh");
+            command
+                .arg("-c")
+                .arg(&shell_cmd)
+                .current_dir(&working_directory)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            for (key, value) in &envs {
+                command.env(key, value);
+            }
+            let mut child = command
+                .spawn()
+                .with_context(|| format!("failed to spawn runner command: {program}"))?;
+            let status = child.wait().context("failed to wait for runner")?;
+            Ok::<_, anyhow::Error>(status)
+        })
+        .await
+        .context("spawn_blocking join failed")??;
+
         let stream_and_collect = async move {
-            let status = child.wait().await?;
 
             let stdout = fs::read_to_string(&stdout_path)
                 .await
@@ -152,13 +163,13 @@ impl Runner for CliRunner {
             }
 
             let stderr_str = String::from_utf8_lossy(&stderr_bytes).to_string();
-            Ok::<_, std::io::Error>((stdout, stderr_str, status))
+            Ok::<_, std::io::Error>((stdout, stderr_str))
         };
 
-        let (stdout, stderr, status) = timeout(self.timeout, stream_and_collect)
+        let (stdout, stderr) = timeout(self.timeout, stream_and_collect)
             .await
             .map_err(|_| anyhow!("runner timed out after {}s", self.timeout.as_secs()))?
-            .with_context(|| format!("failed to execute runner command: {program}"))?;
+            .with_context(|| "failed to execute runner command".to_string())?;
 
         let exit_code = status.code().unwrap_or(-1);
 
