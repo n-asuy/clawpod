@@ -101,6 +101,13 @@ impl Runner for CliRunner {
                 .await
                 .unwrap_or_default();
             let stderr_bytes = fs::read(&stderr_path).await.unwrap_or_default();
+            if stdout.is_empty() {
+                warn!(
+                    path = %stdout_path.display(),
+                    exit_code = status.code().unwrap_or(-1),
+                    "runner stdout tempfile was empty"
+                );
+            }
             let _ = fs::remove_file(&stdout_path).await;
             let _ = fs::remove_file(&stderr_path).await;
 
