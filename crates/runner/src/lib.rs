@@ -62,13 +62,18 @@ impl Runner for CliRunner {
         // Use std::process (blocking) via spawn_blocking to avoid Tokio's
         // SIGCHLD-based Child::wait() which is unreliable in Linux daemon
         // contexts. Stdout/stderr are captured to temp files.
-        let stdout_file = tempfile::NamedTempFile::new_in(&request.working_directory)
-            .context("failed to create stdout tempfile")?;
-        let stderr_file = tempfile::NamedTempFile::new_in(&request.working_directory)
-            .context("failed to create stderr tempfile")?;
+        // Use into_temp_path() so the file is not deleted on drop of the
+        // NamedTempFile handle — we read it after the child process writes to
+        // it via shell redirect, then clean up manually.
+        let stdout_tmp = tempfile::NamedTempFile::new_in(&request.working_directory)
+            .context("failed to create stdout tempfile")?
+            .into_temp_path();
+        let stderr_tmp = tempfile::NamedTempFile::new_in(&request.working_directory)
+            .context("failed to create stderr tempfile")?
+            .into_temp_path();
 
-        let stdout_path = stdout_file.path().to_path_buf();
-        let stderr_path = stderr_file.path().to_path_buf();
+        let stdout_path = stdout_tmp.to_path_buf();
+        let stderr_path = stderr_tmp.to_path_buf();
 
         // Reopen files without O_CLOEXEC so child processes inherit them.
         // NamedTempFile opens with O_CLOEXEC which causes the fd to close
@@ -84,9 +89,10 @@ impl Runner for CliRunner {
             .open(&stderr_path)
             .context("failed to reopen stderr tempfile")?;
 
-        // Drop the original NamedTempFile handles (keep paths for cleanup)
-        drop(stdout_file);
-        drop(stderr_file);
+        // TempPath auto-deletes on drop; we read after spawn_blocking, then
+        // manually remove in stream_and_collect — so just keep them alive.
+        let _stdout_guard = stdout_tmp;
+        let _stderr_guard = stderr_tmp;
 
         let working_directory = request.working_directory.clone();
 
