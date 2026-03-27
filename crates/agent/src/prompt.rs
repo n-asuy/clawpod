@@ -28,6 +28,11 @@ pub struct PromptContext<'a> {
     pub user_system_prompt: Option<&'a str>,
     pub is_heartbeat: bool,
     pub heartbeat_ack_max_chars: Option<usize>,
+    /// True when heartbeat.md has non-empty body (custom instructions).
+    /// When set, HeartbeatSection omits HEARTBEAT_OK guidance so the
+    /// agent focuses on executing the task.
+    #[allow(unused)]
+    pub heartbeat_has_custom_prompt: bool,
     pub light_context: bool,
 }
 
@@ -204,6 +209,19 @@ impl PromptSection for HeartbeatSection {
         if !ctx.is_heartbeat {
             return Ok(String::new());
         }
+
+        // When heartbeat.md has custom instructions, omit the HEARTBEAT_OK
+        // guidance so the agent focuses on executing the task rather than
+        // short-circuiting with an ack response (Clawith/tinyclaw approach).
+        if ctx.heartbeat_has_custom_prompt {
+            return Ok(
+                "## Heartbeat Run\n\n\
+                 This is an automated heartbeat run, not a user conversation.\n\
+                 Execute the instructions provided. Do not infer tasks from prior conversation history."
+                    .to_string(),
+            );
+        }
+
         let ack_chars = ctx.heartbeat_ack_max_chars.unwrap_or(300);
         Ok(format!(
             r#"## Heartbeat Run
@@ -496,6 +514,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let output = IdentitySection.build(&ctx).unwrap();
@@ -521,6 +540,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let output = IdentitySection.build(&ctx).unwrap();
@@ -540,6 +560,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let output = IdentitySection.build(&ctx).unwrap();
@@ -573,6 +594,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let output = TeammatesSection.build(&ctx).unwrap();
@@ -596,6 +618,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let output = TeammatesSection.build(&ctx).unwrap();
@@ -617,6 +640,7 @@ mod tests {
             user_system_prompt: Some("Custom instructions here"),
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let output = UserPromptSection.build(&ctx).unwrap();
@@ -636,6 +660,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let output = UserPromptSection.build(&ctx).unwrap();
@@ -660,6 +685,7 @@ mod tests {
             user_system_prompt: Some("User custom prompt"),
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
 
@@ -685,6 +711,7 @@ mod tests {
             user_system_prompt: Some("User custom prompt"),
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
 
@@ -718,6 +745,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
 
@@ -752,6 +780,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
 
@@ -836,6 +865,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
@@ -874,6 +904,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
@@ -899,6 +930,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let output = HeartbeatSection.build(&ctx).unwrap();
@@ -918,6 +950,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: true,
             heartbeat_ack_max_chars: Some(500),
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let output = HeartbeatSection.build(&ctx).unwrap();
@@ -939,6 +972,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: true,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let output = HeartbeatSection.build(&ctx).unwrap();
@@ -958,6 +992,7 @@ mod tests {
             user_system_prompt: Some("Custom prompt"),
             is_heartbeat: true,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: true,
         };
         let prompt = SystemPromptBuilder::with_heartbeat_defaults()
@@ -981,6 +1016,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: true,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         };
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();

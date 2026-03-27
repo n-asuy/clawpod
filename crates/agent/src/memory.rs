@@ -252,6 +252,7 @@ mod tests {
             user_system_prompt: None,
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
+            heartbeat_has_custom_prompt: false,
             light_context: false,
         }
     }

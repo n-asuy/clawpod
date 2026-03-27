@@ -253,9 +253,14 @@ impl HeartbeatService {
             }
         }
 
-        let effective_prompt = match &file_settings {
-            Some(settings) if !is_effectively_empty(&settings.body) => settings.body.as_str(),
-            _ => &policy.prompt,
+        let has_custom_prompt = matches!(
+            &file_settings,
+            Some(settings) if !is_effectively_empty(&settings.body)
+        );
+        let effective_prompt = if has_custom_prompt {
+            file_settings.as_ref().unwrap().body.as_str()
+        } else {
+            &policy.prompt
         };
 
         // If even the policy prompt is empty, skip (shouldn't happen with defaults).
@@ -283,7 +288,8 @@ impl HeartbeatService {
         let provider = agent.provider;
         let think_level = agent.think_level.unwrap_or_default();
 
-        let system_prompt = self.build_system_prompt(&session_dir, agent_id, &policy)?;
+        let system_prompt =
+            self.build_system_prompt(&session_dir, agent_id, &policy, has_custom_prompt)?;
 
         // Pass system prompt via metadata so the runner sends it as
         // `--system-prompt` (system role) instead of concatenating it
@@ -564,6 +570,7 @@ impl HeartbeatService {
         session_dir: &std::path::Path,
         agent_id: &str,
         policy: &EffectiveHeartbeatPolicy,
+        has_custom_prompt: bool,
     ) -> Result<String> {
         let ctx = PromptContext {
             workspace_dir: session_dir,
@@ -577,6 +584,7 @@ impl HeartbeatService {
                 .and_then(|a| a.system_prompt.as_deref()),
             is_heartbeat: true,
             heartbeat_ack_max_chars: Some(policy.ack_max_chars),
+            heartbeat_has_custom_prompt: has_custom_prompt,
             light_context: policy.light_context,
         };
 
