@@ -59,9 +59,9 @@ impl Runner for CliRunner {
             ProviderKind::Mock => unreachable!("mock handled above"),
         };
 
-        // Redirect stdout/stderr to temp files via shell to avoid Tokio
-        // pipe EOF issues. Direct Stdio::from(file) doesn't propagate
-        // correctly through codex's node wrapper (stdio: "inherit").
+        // Use std::process (blocking) via spawn_blocking to avoid Tokio's
+        // SIGCHLD-based Child::wait() which is unreliable in Linux daemon
+        // contexts. Stdout/stderr are captured to temp files.
         let stdout_file = tempfile::NamedTempFile::new()
             .context("failed to create stdout tempfile")?;
         let stderr_file = tempfile::NamedTempFile::new()
@@ -69,25 +69,6 @@ impl Runner for CliRunner {
 
         let stdout_path = stdout_file.path().to_path_buf();
         let stderr_path = stderr_file.path().to_path_buf();
-
-        // Drop the file handles so the shell can write to the paths
-        drop(stdout_file);
-        drop(stderr_file);
-
-        // Build shell command: program args... >stdout_path 2>stderr_path
-        let shell_args: Vec<String> = std::iter::once(program.clone())
-            .chain(args.into_iter())
-            .collect();
-        let shell_cmd = format!(
-            "{} >{} 2>{}",
-            shell_args
-                .iter()
-                .map(|a| shell_escape::unix::escape(a.into()))
-                .collect::<Vec<_>>()
-                .join(" "),
-            stdout_path.display(),
-            stderr_path.display(),
-        );
 
         let working_directory = request.working_directory.clone();
 
@@ -99,29 +80,35 @@ impl Runner for CliRunner {
 
         let run_id_clone = run_id.clone();
 
-        // Use std::process (blocking) via spawn_blocking to avoid Tokio's
-        // SIGCHLD-based Child::wait() which is unreliable on some Linux
-        // daemon configurations.
+        let stdout_path_spawn = stdout_path.clone();
+        let stderr_path_spawn = stderr_path.clone();
         let status = tokio::task::spawn_blocking(move || {
-            let mut command = std::process::Command::new("sh");
+            let stdout_f = std::fs::File::create(&stdout_path_spawn)
+                .context("failed to open stdout file")?;
+            let stderr_f = std::fs::File::create(&stderr_path_spawn)
+                .context("failed to open stderr file")?;
+            let mut command = std::process::Command::new(&program);
             command
-                .arg("-c")
-                .arg(&shell_cmd)
+                .args(&args)
                 .current_dir(&working_directory)
                 .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
+                .stdout(stdout_f)
+                .stderr(stderr_f);
             for (key, value) in &envs {
                 command.env(key, value);
             }
             let mut child = command
                 .spawn()
-                .with_context(|| format!("failed to spawn runner command: {program}"))?;
+                .with_context(|| format!("failed to spawn runner: {program}"))?;
             let status = child.wait().context("failed to wait for runner")?;
             Ok::<_, anyhow::Error>(status)
         })
         .await
         .context("spawn_blocking join failed")??;
+
+        // Drop temp file handles (they were moved into spawn_blocking via path)
+        drop(stdout_file);
+        drop(stderr_file);
 
         let stream_and_collect = async move {
 
