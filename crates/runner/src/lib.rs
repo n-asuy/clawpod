@@ -70,6 +70,24 @@ impl Runner for CliRunner {
         let stdout_path = stdout_file.path().to_path_buf();
         let stderr_path = stderr_file.path().to_path_buf();
 
+        // Reopen files without O_CLOEXEC so child processes inherit them.
+        // NamedTempFile opens with O_CLOEXEC which causes the fd to close
+        // on exec, resulting in empty output files.
+        let stdout_f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&stdout_path)
+            .context("failed to reopen stdout tempfile")?;
+        let stderr_f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&stderr_path)
+            .context("failed to reopen stderr tempfile")?;
+
+        // Drop the original NamedTempFile handles (keep paths for cleanup)
+        drop(stdout_file);
+        drop(stderr_file);
+
         let working_directory = request.working_directory.clone();
 
         let is_codex = matches!(provider, ProviderKind::Openai)
@@ -80,34 +98,14 @@ impl Runner for CliRunner {
 
         let run_id_clone = run_id.clone();
 
-        let stdout_path_s = stdout_path.display().to_string();
-        let stderr_path_s = stderr_path.display().to_string();
-        // Build a shell command that redirects stdout/stderr to temp files.
-        // Using shell-level redirect (>) because Stdio::from(File) doesn't
-        // propagate correctly through codex's node wrapper.
-        let mut shell_parts: Vec<String> = Vec::new();
-        shell_parts.push(shell_quote(&program));
-        for arg in &args {
-            shell_parts.push(shell_quote(arg));
-        }
-        let shell_cmd = format!(
-            "{} >'{}' 2>'{}'",
-            shell_parts.join(" "),
-            stdout_path_s,
-            stderr_path_s,
-        );
-
-        warn!(cmd = %shell_cmd, "runner shell command");
-
         let status = tokio::task::spawn_blocking(move || {
-            let mut command = std::process::Command::new("sh");
+            let mut command = std::process::Command::new(&program);
             command
-                .arg("-c")
-                .arg(&shell_cmd)
+                .args(&args)
                 .current_dir(&working_directory)
                 .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
+                .stdout(stdout_f)
+                .stderr(stderr_f);
             for (key, value) in &envs {
                 command.env(key, value);
             }
@@ -119,9 +117,6 @@ impl Runner for CliRunner {
         })
         .await
         .context("spawn_blocking join failed")??;
-
-        drop(stdout_file);
-        drop(stderr_file);
 
         let stream_and_collect = async move {
 
@@ -550,14 +545,6 @@ fn extract_claude_result_text(jsonl: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 // Mock runner
 // ---------------------------------------------------------------------------
-
-fn shell_quote(s: &str) -> String {
-    if s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'/') {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    }
-}
 
 async fn run_mock(request: RunRequest) -> Result<RunResult> {
     let started = Instant::now();
