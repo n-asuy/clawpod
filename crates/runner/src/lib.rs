@@ -97,7 +97,7 @@ impl Runner for CliRunner {
             stderr_path_s,
         );
 
-        tracing::debug!(cmd = %shell_cmd, "runner shell command");
+        warn!(cmd = %shell_cmd, "runner shell command");
 
         let status = tokio::task::spawn_blocking(move || {
             let mut command = std::process::Command::new("sh");
