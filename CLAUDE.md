@@ -43,13 +43,15 @@ cargo build --release -p runtime
 
 ## Deploy
 
-Pushing to `main` triggers GitHub Actions (`.github/workflows/deploy.yml`):
-1. `cargo test`
-2. `cargo build --release -p runtime`
-3. Transfer binary to server via SCP
-4. Restart systemd service
+Local deploy via SSH (server builds from source). Requires `DEPLOY_HOST` env var:
 
-Server credentials are stored in GitHub Secrets (`HETZNER_SSH_KEY`, `DEPLOY_HOST`).
+```sh
+export DEPLOY_HOST=<server-ip>        # or set in .env / shell profile
+./scripts/deploy.sh                   # deploy main
+./scripts/deploy.sh feat/xxx          # deploy a specific branch
+```
+
+Optional env vars: `DEPLOY_USER` (default: root), `DEPLOY_SRC_DIR` (default: /opt/clawpod-src).
 
 For initial server setup, use the `hetzner-deploy` skill.
 
