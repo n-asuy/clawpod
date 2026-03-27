@@ -5,7 +5,6 @@ use chrono::Utc;
 use domain::{ProviderKind, RunEvent, RunEventType, RunRequest, RunResult, Runner};
 use serde_json::Value;
 use tokio::fs;
-use std::process::Stdio;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
@@ -61,16 +60,9 @@ impl Runner for CliRunner {
             ProviderKind::Mock => unreachable!("mock handled above"),
         };
 
-        let mut command = Command::new(&program);
-        command.args(args).current_dir(&request.working_directory);
-        for (key, value) in envs {
-            command.env(key, value);
-        }
-
-        // Redirect stdout/stderr to temp files instead of pipes.
-        // Tokio's piped ChildStdout can hang indefinitely on Linux when
-        // the child exits before the first async read is polled (lost
-        // edge-triggered epoll notification).  File-based I/O avoids this.
+        // Redirect stdout/stderr to temp files via shell to avoid Tokio
+        // pipe EOF issues. Direct Stdio::from(file) doesn't propagate
+        // correctly through codex's node wrapper (stdio: "inherit").
         let stdout_file = tempfile::NamedTempFile::new()
             .context("failed to create stdout tempfile")?;
         let stderr_file = tempfile::NamedTempFile::new()
@@ -79,10 +71,36 @@ impl Runner for CliRunner {
         let stdout_path = stdout_file.path().to_path_buf();
         let stderr_path = stderr_file.path().to_path_buf();
 
+        // Drop the file handles so the shell can write to the paths
+        drop(stdout_file);
+        drop(stderr_file);
+
+        // Build shell command: program args... >stdout_path 2>stderr_path
+        let shell_args: Vec<String> = std::iter::once(program.clone())
+            .chain(args.into_iter())
+            .collect();
+        let shell_cmd = format!(
+            "{} >{} 2>{}",
+            shell_args
+                .iter()
+                .map(|a| shell_escape::unix::escape(a.into()))
+                .collect::<Vec<_>>()
+                .join(" "),
+            stdout_path.display(),
+            stderr_path.display(),
+        );
+
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(&shell_cmd)
+            .current_dir(&request.working_directory);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+
         let mut child = command
             .stdin(std::process::Stdio::null())
-            .stdout(Stdio::from(stdout_file.into_file()))
-            .stderr(Stdio::from(stderr_file.into_file()))
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("failed to spawn runner command: {program}"))?;
