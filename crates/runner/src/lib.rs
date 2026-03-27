@@ -80,20 +80,32 @@ impl Runner for CliRunner {
 
         let run_id_clone = run_id.clone();
 
-        let stdout_path_spawn = stdout_path.clone();
-        let stderr_path_spawn = stderr_path.clone();
+        let stdout_path_s = stdout_path.display().to_string();
+        let stderr_path_s = stderr_path.display().to_string();
+        // Build a shell command that redirects stdout/stderr to temp files.
+        // Using shell-level redirect (>) because Stdio::from(File) doesn't
+        // propagate correctly through codex's node wrapper.
+        let mut shell_parts: Vec<String> = Vec::new();
+        shell_parts.push(shell_quote(&program));
+        for arg in &args {
+            shell_parts.push(shell_quote(arg));
+        }
+        let shell_cmd = format!(
+            "{} >'{}' 2>'{}'",
+            shell_parts.join(" "),
+            stdout_path_s,
+            stderr_path_s,
+        );
+
         let status = tokio::task::spawn_blocking(move || {
-            let stdout_f = std::fs::File::create(&stdout_path_spawn)
-                .context("failed to open stdout file")?;
-            let stderr_f = std::fs::File::create(&stderr_path_spawn)
-                .context("failed to open stderr file")?;
-            let mut command = std::process::Command::new(&program);
+            let mut command = std::process::Command::new("sh");
             command
-                .args(&args)
+                .arg("-c")
+                .arg(&shell_cmd)
                 .current_dir(&working_directory)
                 .stdin(std::process::Stdio::null())
-                .stdout(stdout_f)
-                .stderr(stderr_f);
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
             for (key, value) in &envs {
                 command.env(key, value);
             }
@@ -106,7 +118,6 @@ impl Runner for CliRunner {
         .await
         .context("spawn_blocking join failed")??;
 
-        // Drop temp file handles (they were moved into spawn_blocking via path)
         drop(stdout_file);
         drop(stderr_file);
 
@@ -537,6 +548,14 @@ fn extract_claude_result_text(jsonl: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 // Mock runner
 // ---------------------------------------------------------------------------
+
+fn shell_quote(s: &str) -> String {
+    if s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'/') {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
 
 async fn run_mock(request: RunRequest) -> Result<RunResult> {
     let started = Instant::now();
