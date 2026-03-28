@@ -1160,7 +1160,7 @@ impl QueueProcessor {
             user_system_prompt: user_prompt.as_deref(),
             is_heartbeat: false,
             heartbeat_ack_max_chars: None,
-            heartbeat_has_custom_prompt: false,
+
             light_context: false,
         };
         let full = SystemPromptBuilder::with_defaults().build(&ctx)?;

@@ -253,18 +253,14 @@ impl HeartbeatService {
             }
         }
 
-        let has_custom_prompt = matches!(
-            &file_settings,
-            Some(settings) if !is_effectively_empty(&settings.body)
-        );
-        let effective_prompt = if has_custom_prompt {
-            file_settings.as_ref().unwrap().body.as_str()
-        } else {
+        // Use a fixed prompt (OpenClaw approach): the agent reads heartbeat.md
+        // itself rather than receiving its body as the prompt.
+        let heartbeat_file_exists = heartbeat_raw.is_some();
+        let effective_prompt = if heartbeat_file_exists {
+            "Read heartbeat.md in your workspace root and follow its instructions strictly. Do not infer or repeat old tasks from prior conversation history. If nothing needs attention, reply HEARTBEAT_OK."
+        } else if !policy.prompt.is_empty() {
             &policy.prompt
-        };
-
-        // If even the policy prompt is empty, skip (shouldn't happen with defaults).
-        if is_effectively_empty(effective_prompt) && !reason.is_event_driven() {
+        } else if !reason.is_event_driven() {
             return self.record_skip(
                 agent_id,
                 &reason,
@@ -272,7 +268,9 @@ impl HeartbeatService {
                 started,
                 "empty-heartbeat-file",
             );
-        }
+        } else {
+            &policy.prompt
+        };
 
         // Resolve session key
         let main_session_key = format!("agent:{agent_id}:{}", self.config.session.main_key);
@@ -288,8 +286,7 @@ impl HeartbeatService {
         let provider = agent.provider;
         let think_level = agent.think_level.unwrap_or_default();
 
-        let system_prompt =
-            self.build_system_prompt(&session_dir, agent_id, &policy, has_custom_prompt)?;
+        let system_prompt = self.build_system_prompt(&session_dir, agent_id, &policy)?;
 
         // Pass system prompt via metadata so the runner sends it as
         // `--system-prompt` (system role) instead of concatenating it
@@ -570,7 +567,6 @@ impl HeartbeatService {
         session_dir: &std::path::Path,
         agent_id: &str,
         policy: &EffectiveHeartbeatPolicy,
-        has_custom_prompt: bool,
     ) -> Result<String> {
         let ctx = PromptContext {
             workspace_dir: session_dir,
@@ -584,7 +580,6 @@ impl HeartbeatService {
                 .and_then(|a| a.system_prompt.as_deref()),
             is_heartbeat: true,
             heartbeat_ack_max_chars: Some(policy.ack_max_chars),
-            heartbeat_has_custom_prompt: has_custom_prompt,
             light_context: policy.light_context,
         };
 
@@ -694,6 +689,10 @@ async fn load_heartbeat_md(agent_root: &std::path::Path) -> Option<String> {
 struct HeartbeatFileSettings {
     target: Option<HeartbeatTarget>,
     to: Option<String>,
+    /// Body content after frontmatter. Retained for frontmatter parsing
+    /// completeness and test coverage, though the runtime now sends a
+    /// fixed prompt instead of the body.
+    #[allow(dead_code)]
     body: String,
 }
 
@@ -771,17 +770,6 @@ fn parse_heartbeat_target(s: &str) -> Option<HeartbeatTarget> {
     }
 }
 
-fn is_effectively_empty(content: &str) -> bool {
-    content.lines().all(|line| {
-        let trimmed = line.trim();
-        trimmed.is_empty()
-            || trimmed.starts_with('#')
-            || trimmed.starts_with("<!--")
-            || trimmed.starts_with("-->")
-            || trimmed == "- [ ]"
-            || trimmed == "* "
-    })
-}
 
 fn truncate_preview(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -851,21 +839,6 @@ mod tests {
         next.heartbeat.enabled = true;
         assert!(control.update_from_config(&next));
         assert!(control.subscribe().borrow().enabled);
-    }
-
-    #[test]
-    fn is_effectively_empty_detects_template() {
-        assert!(is_effectively_empty(
-            "# Heartbeat\n\n<!-- instructions -->\n"
-        ));
-        assert!(is_effectively_empty(""));
-        assert!(is_effectively_empty("  \n  \n"));
-    }
-
-    #[test]
-    fn is_effectively_empty_detects_content() {
-        assert!(!is_effectively_empty("Check the deploy status"));
-        assert!(!is_effectively_empty("# Heartbeat\nCheck status"));
     }
 
     #[test]
