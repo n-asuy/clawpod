@@ -1726,8 +1726,16 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
     const agents = Object.keys(agentsData.agents || {});
     const runs = heartbeatData.runs || [];
     const hb = heartbeatData.config || {};
+    const policies = heartbeatData.agent_policies || {};
+    const policyAgents = Object.keys(policies);
 
     if (heartbeatAgentId && !agents.includes(heartbeatAgentId)) heartbeatAgentId = '';
+
+    const sourceLabel = (src) => {
+      if (src === 'agent') return '<span class="badge badge-blue">agent</span>';
+      if (src === 'agent_defaults') return '<span class="badge badge-gray">defaults</span>';
+      return '<span class="badge badge-gray">default</span>';
+    };
 
     el.innerHTML = `
       <div style="display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap">
@@ -1737,20 +1745,8 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
             <input type="checkbox" id="heartbeat-enabled" ${hb.enabled ? 'checked' : ''}>
             enabled
           </label>
-          <label class="text-dim" for="heartbeat-interval-sec" style="margin:0">interval</label>
-          <input
-            class="form-input"
-            id="heartbeat-interval-sec"
-            type="number"
-            min="1"
-            step="1"
-            value="${escapeHtml(String(hb.interval_sec || 3600))}"
-            style="width:110px"
-          >
-          <span class="text-dim">sec</span>
-          <button class="btn btn-sm" onclick="saveHeartbeatSettings()">Save</button>
+          <button class="btn btn-sm" onclick="saveHeartbeatEnabled()">Save</button>
           ${hb.restart_supported ? '<button class="btn btn-sm" onclick="restartRuntime()">Restart Runtime</button>' : ''}
-          <span class="text-dim">applies live</span>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <label class="form-label" style="margin:0">Agent:</label>
@@ -1761,6 +1757,24 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
           <button class="btn btn-sm" onclick="triggerHeartbeatSelected()" ${heartbeatAgentId ? '' : 'disabled'}>Run${heartbeatAgentId ? ' ' + escapeHtml(heartbeatAgentId) : ''}</button>
         </div>
       </div>
+      ${policyAgents.length > 0 ? `
+      <div class="card" style="margin-bottom:12px"><div class="card-body table-wrap"><table>
+        <thead><tr><th>Agent</th><th>Interval</th><th>Source</th><th></th></tr></thead>
+        <tbody>
+          ${policyAgents.map(id => {
+            const p = policies[id];
+            return `<tr>
+              <td><span class="badge badge-blue">${escapeHtml(id)}</span></td>
+              <td>
+                <input class="form-input" data-agent-interval="${escapeHtml(id)}"
+                  value="${escapeHtml(p.every_display)}" style="width:80px" placeholder="30m">
+              </td>
+              <td>${sourceLabel(p.source)}</td>
+              <td><button class="btn btn-sm" onclick="saveAgentInterval('${escapeHtml(id)}')">Save</button></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div></div>` : ''}
       <div class="card"><div class="card-body table-wrap"><table>
         <thead><tr>
           <th>Agent</th><th>Indicator</th><th>Status</th><th>Reason</th>
@@ -1799,19 +1813,37 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
     }
   };
 
-  window.saveHeartbeatSettings = async function() {
+  window.saveHeartbeatEnabled = async function() {
     try {
-      const intervalSec = Number.parseInt($('#heartbeat-interval-sec').value, 10);
-      if (!Number.isInteger(intervalSec) || intervalSec < 1) {
-        throw new Error('Interval must be an integer >= 1');
-      }
       const data = await GET('/api/settings');
       const config = data.config || {};
       config.heartbeat = config.heartbeat || {};
       config.heartbeat.enabled = $('#heartbeat-enabled').checked;
-      config.heartbeat.interval_sec = intervalSec;
       await PUT('/api/settings', config);
-      toast('Heartbeat settings saved and applied live', 'success');
+      toast('Heartbeat enabled setting saved', 'success');
+      renderHeartbeat($('#page-container'));
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+
+  window.saveAgentInterval = async function(agentId) {
+    try {
+      const input = document.querySelector(`[data-agent-interval="${agentId}"]`);
+      if (!input) return;
+      const every = input.value.trim();
+      if (!every || !/^\d+[smh]?$/.test(every)) {
+        throw new Error('Interval must be a duration like 30m, 1h, 300s');
+      }
+      const data = await GET('/api/settings');
+      const config = data.config || {};
+      if (!config.agents || !config.agents[agentId]) {
+        throw new Error(`Agent "${agentId}" not found in config`);
+      }
+      config.agents[agentId].heartbeat = config.agents[agentId].heartbeat || {};
+      config.agents[agentId].heartbeat.every = every;
+      await PUT('/api/settings', config);
+      toast(`Interval for ${agentId} saved: ${every}`, 'success');
       renderHeartbeat($('#page-container'));
     } catch (err) {
       toast(err.message, 'error');

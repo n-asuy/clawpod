@@ -856,6 +856,39 @@ async fn list_heartbeat_runs(
         .store
         .list_heartbeat_runs(query.limit.unwrap_or(100), query.agent_id.as_deref())
         .map_err(internal_error)?;
+
+    // Compute per-agent effective heartbeat policies
+    let agent_defaults_hb = config
+        .agent_defaults
+        .as_ref()
+        .and_then(|d| d.heartbeat.as_ref());
+    let any_explicit = config.agents.values().any(|a| a.heartbeat.is_some());
+    let mut agent_policies = serde_json::Map::new();
+    for (agent_id, agent_cfg) in &config.agents {
+        if any_explicit && agent_cfg.heartbeat.is_none() {
+            continue;
+        }
+        let agent_hb = agent_cfg.heartbeat.as_ref();
+        if let Ok(policy) = heartbeat::policy::resolve_effective_policy(agent_defaults_hb, agent_hb)
+        {
+            let source = if agent_hb.and_then(|h| h.every.as_ref()).is_some() {
+                "agent"
+            } else if agent_defaults_hb.and_then(|h| h.every.as_ref()).is_some() {
+                "agent_defaults"
+            } else {
+                "default"
+            };
+            agent_policies.insert(
+                agent_id.clone(),
+                json!({
+                    "every_sec": policy.every.as_secs(),
+                    "every_display": format_duration_human(policy.every),
+                    "source": source,
+                }),
+            );
+        }
+    }
+
     Ok(Json(json!({
         "config": {
             "enabled": config.heartbeat.enabled,
@@ -863,8 +896,20 @@ async fn list_heartbeat_runs(
             "sender": config.heartbeat.sender,
             "restart_supported": runtime_restart_supported(&state),
         },
+        "agent_policies": agent_policies,
         "runs": runs,
     })))
+}
+
+fn format_duration_human(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs >= 3600 && secs % 3600 == 0 {
+        format!("{}h", secs / 3600)
+    } else if secs >= 60 && secs % 60 == 0 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}s", secs)
+    }
 }
 
 #[derive(Debug, Deserialize)]
