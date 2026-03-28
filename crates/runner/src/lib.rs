@@ -5,8 +5,6 @@ use chrono::Utc;
 use domain::{ProviderKind, RunEvent, RunEventType, RunRequest, RunResult, Runner};
 use serde_json::Value;
 use tokio::fs;
-use std::process::Stdio;
-use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 use tracing::warn;
@@ -61,31 +59,12 @@ impl Runner for CliRunner {
             ProviderKind::Mock => unreachable!("mock handled above"),
         };
 
-        let mut command = Command::new(&program);
-        command.args(args).current_dir(&request.working_directory);
-        for (key, value) in envs {
-            command.env(key, value);
-        }
-
-        // Redirect stdout/stderr to temp files instead of pipes.
-        // Tokio's piped ChildStdout can hang indefinitely on Linux when
-        // the child exits before the first async read is polled (lost
-        // edge-triggered epoll notification).  File-based I/O avoids this.
-        let stdout_file = tempfile::NamedTempFile::new()
-            .context("failed to create stdout tempfile")?;
-        let stderr_file = tempfile::NamedTempFile::new()
-            .context("failed to create stderr tempfile")?;
-
-        let stdout_path = stdout_file.path().to_path_buf();
-        let stderr_path = stderr_file.path().to_path_buf();
-
-        let mut child = command
-            .stdin(std::process::Stdio::null())
-            .stdout(Stdio::from(stdout_file.into_file()))
-            .stderr(Stdio::from(stderr_file.into_file()))
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| format!("failed to spawn runner command: {program}"))?;
+        // Use std::process (blocking) via spawn_blocking to avoid Tokio's
+        // async Child::wait() and edge-triggered pipe EOF issues. Piped
+        // stdout/stderr are read synchronously in the blocking thread,
+        // completely bypassing Tokio's epoll/SIGCHLD machinery.
+        let working_directory = request.working_directory.clone();
+        let program_name = program.clone();
 
         let is_codex = matches!(provider, ProviderKind::Openai)
             || is_openai_harness(&request.metadata);
@@ -94,46 +73,62 @@ impl Runner for CliRunner {
         let request_metadata = request.metadata.clone();
 
         let run_id_clone = run_id.clone();
-        let stream_and_collect = async move {
-            let status = child.wait().await?;
 
-            let stdout = fs::read_to_string(&stdout_path)
-                .await
-                .unwrap_or_default();
-            let stderr_bytes = fs::read(&stderr_path).await.unwrap_or_default();
-            let _ = fs::remove_file(&stdout_path).await;
-            let _ = fs::remove_file(&stderr_path).await;
+        let run_child = async move {
+            tokio::task::spawn_blocking(move || {
+                use std::io::Read;
 
-            // Emit streaming events from collected output
-            let mut seq: u32 = 0;
-            for line in stdout.lines() {
-                seq += 1;
-                let event = if is_codex {
-                    parse_codex_jsonl_event(line, &run_id_clone, seq)
-                } else if is_claude {
-                    parse_claude_stream_event(line, &run_id_clone, seq)
-                } else {
-                    Some(RunEvent {
-                        run_id: run_id_clone.clone(),
-                        seq,
-                        timestamp: Utc::now().to_rfc3339(),
-                        event_type: RunEventType::TextChunk,
-                        data: serde_json::json!({ "text": line }),
-                    })
-                };
-                if let Some(ev) = event {
-                    let _ = tx.send(ev).await;
+                let mut child = std::process::Command::new(&program)
+                    .args(&args)
+                    .current_dir(&working_directory)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                    .spawn()
+                    .with_context(|| format!("failed to spawn runner: {program}"))?;
+
+                let mut stdout_buf = Vec::new();
+                let mut stderr_buf = Vec::new();
+                if let Some(mut out) = child.stdout.take() {
+                    let _ = out.read_to_end(&mut stdout_buf);
                 }
-            }
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_end(&mut stderr_buf);
+                }
+                let status = child.wait().context("failed to wait for runner")?;
 
-            let stderr_str = String::from_utf8_lossy(&stderr_bytes).to_string();
-            Ok::<_, std::io::Error>((stdout, stderr_str, status))
+                let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
+                let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
+
+                // Emit streaming events from collected output
+                let mut seq: u32 = 0;
+                for line in stdout.lines() {
+                    seq += 1;
+                    let event = if is_codex {
+                        parse_codex_jsonl_event(line, &run_id_clone, seq)
+                    } else if is_claude {
+                        parse_claude_stream_event(line, &run_id_clone, seq)
+                    } else {
+                        None
+                    };
+                    if let Some(ev) = event {
+                        // tx.send is sync mpsc::Sender::blocking_send is not
+                        // available, but try_send works for buffered events
+                        let _ = tx.try_send(ev);
+                    }
+                }
+
+                Ok::<_, anyhow::Error>((stdout, stderr, status))
+            })
+            .await
+            .context("spawn_blocking join failed")?
         };
 
-        let (stdout, stderr, status) = timeout(self.timeout, stream_and_collect)
+        let (stdout, stderr, status) = timeout(self.timeout, run_child)
             .await
             .map_err(|_| anyhow!("runner timed out after {}s", self.timeout.as_secs()))?
-            .with_context(|| format!("failed to execute runner command: {program}"))?;
+            .with_context(|| format!("failed to execute runner command: {program_name}"))?;
 
         let exit_code = status.code().unwrap_or(-1);
 
@@ -373,8 +368,6 @@ fn parse_claude_stream_event(line: &str, run_id: &str, seq: u32) -> Option<RunEv
         "assistant" => {
             let message = value.get("message")?;
             let content = message.get("content").and_then(|c| c.as_array())?;
-            // Each assistant event carries one or more content blocks.
-            // Emit an event for the last (newest) content block.
             let block = content.last()?;
             let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or_default();
 
@@ -435,7 +428,6 @@ fn parse_claude_stream_event(line: &str, run_id: &str, seq: u32) -> Option<RunEv
             }
         }
         "user" => {
-            // Tool results from Claude
             let message = value.get("message")?;
             let content = message.get("content").and_then(|c| c.as_array())?;
             let block = content.last()?;
@@ -487,7 +479,6 @@ fn parse_claude_stream_event(line: &str, run_id: &str, seq: u32) -> Option<RunEv
                 }),
             })
         }
-        // Skip system init, rate_limit_event, etc.
         _ => None,
     }
 }

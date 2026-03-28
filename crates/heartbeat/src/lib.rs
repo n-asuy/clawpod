@@ -253,13 +253,14 @@ impl HeartbeatService {
             }
         }
 
-        let effective_prompt = match &file_settings {
-            Some(settings) if !is_effectively_empty(&settings.body) => settings.body.as_str(),
-            _ => &policy.prompt,
-        };
-
-        // If even the policy prompt is empty, skip (shouldn't happen with defaults).
-        if is_effectively_empty(effective_prompt) && !reason.is_event_driven() {
+        // Use a fixed prompt (OpenClaw approach): the agent reads heartbeat.md
+        // itself rather than receiving its body as the prompt.
+        let heartbeat_file_exists = heartbeat_raw.is_some();
+        let effective_prompt = if heartbeat_file_exists {
+            "Read heartbeat.md in your workspace root and follow its instructions strictly. Do not infer or repeat old tasks from prior conversation history. If nothing needs attention, reply HEARTBEAT_OK."
+        } else if !policy.prompt.is_empty() {
+            &policy.prompt
+        } else if !reason.is_event_driven() {
             return self.record_skip(
                 agent_id,
                 &reason,
@@ -267,7 +268,9 @@ impl HeartbeatService {
                 started,
                 "empty-heartbeat-file",
             );
-        }
+        } else {
+            &policy.prompt
+        };
 
         // Resolve session key
         let main_session_key = format!("agent:{agent_id}:{}", self.config.session.main_key);
@@ -686,6 +689,10 @@ async fn load_heartbeat_md(agent_root: &std::path::Path) -> Option<String> {
 struct HeartbeatFileSettings {
     target: Option<HeartbeatTarget>,
     to: Option<String>,
+    /// Body content after frontmatter. Retained for frontmatter parsing
+    /// completeness and test coverage, though the runtime now sends a
+    /// fixed prompt instead of the body.
+    #[allow(dead_code)]
     body: String,
 }
 
@@ -763,17 +770,6 @@ fn parse_heartbeat_target(s: &str) -> Option<HeartbeatTarget> {
     }
 }
 
-fn is_effectively_empty(content: &str) -> bool {
-    content.lines().all(|line| {
-        let trimmed = line.trim();
-        trimmed.is_empty()
-            || trimmed.starts_with('#')
-            || trimmed.starts_with("<!--")
-            || trimmed.starts_with("-->")
-            || trimmed == "- [ ]"
-            || trimmed == "* "
-    })
-}
 
 fn truncate_preview(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -843,21 +839,6 @@ mod tests {
         next.heartbeat.enabled = true;
         assert!(control.update_from_config(&next));
         assert!(control.subscribe().borrow().enabled);
-    }
-
-    #[test]
-    fn is_effectively_empty_detects_template() {
-        assert!(is_effectively_empty(
-            "# Heartbeat\n\n<!-- instructions -->\n"
-        ));
-        assert!(is_effectively_empty(""));
-        assert!(is_effectively_empty("  \n  \n"));
-    }
-
-    #[test]
-    fn is_effectively_empty_detects_content() {
-        assert!(!is_effectively_empty("Check the deploy status"));
-        assert!(!is_effectively_empty("# Heartbeat\nCheck status"));
     }
 
     #[test]
