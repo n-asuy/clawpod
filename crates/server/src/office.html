@@ -1118,7 +1118,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
       if (thinkLevel) agent.think_level = thinkLevel;
       await POST('/api/agents', { id: $('#m-agent-id').value, agent });
       closeModal();
-      toast('Agent created', 'success');
+      toast('Agent created — restart runtime for full effect', 'success');
       navigate('agents');
     } catch (err) { toast(err.message, 'error'); }
   };
@@ -1158,7 +1158,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
       if (thinkLevel) agent.think_level = thinkLevel;
       await PUT(`/api/agents/${id}`, { agent });
       closeModal();
-      toast('Agent updated', 'success');
+      toast('Agent updated — restart runtime for full effect', 'success');
       navigate('agents');
     } catch (err) { toast(err.message, 'error'); }
   };
@@ -1167,7 +1167,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
     if (!confirm(`Delete agent "${id}"?`)) return;
     try {
       await DEL(`/api/agents/${id}`);
-      toast('Agent deleted', 'success');
+      toast('Agent deleted — restart runtime for full effect', 'success');
       navigate('agents');
     } catch (err) { toast(err.message, 'error'); }
   };
