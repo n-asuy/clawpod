@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 use config::{default_config_path, ensure_runtime_dirs, load_config, RuntimeConfig};
-use domain::ChatType;
+use domain::{AgentConfig, ChatType, ProviderKind, ThinkLevel};
 use observer::{
     bump_component_restart, log_startup_banner, mark_component_disabled, mark_component_error,
     mark_component_ok, FileEventSink,
@@ -130,6 +130,12 @@ enum Commands {
         #[command(subcommand)]
         command: HeartbeatCommand,
     },
+
+    /// Manage agents
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -193,6 +199,91 @@ pub enum ServiceCommand {
     Restart,
     Status,
     Uninstall,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum AgentCommand {
+    /// List all configured agents
+    #[command(alias = "ls")]
+    List,
+    /// Add a new agent
+    Add {
+        /// Agent ID (alphanumeric, _, -)
+        id: String,
+        /// Display name (defaults to ID)
+        #[arg(long)]
+        name: Option<String>,
+        /// Provider
+        #[arg(long, value_enum, default_value = "anthropic")]
+        provider: ProviderKindArg,
+        /// Model ID
+        #[arg(long, default_value = "claude-sonnet-4-6")]
+        model: String,
+        /// Think level
+        #[arg(long, value_enum)]
+        think_level: Option<ThinkLevelArg>,
+        /// Custom provider ID (required when provider is custom)
+        #[arg(long)]
+        provider_id: Option<String>,
+        /// System prompt
+        #[arg(long)]
+        system_prompt: Option<String>,
+    },
+    /// Remove an agent
+    #[command(alias = "rm")]
+    Remove {
+        /// Agent ID to remove
+        id: String,
+    },
+    /// Show agent configuration
+    Show {
+        /// Agent ID
+        id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ProviderKindArg {
+    Anthropic,
+    Openai,
+    Custom,
+    Mock,
+}
+
+impl From<ProviderKindArg> for ProviderKind {
+    fn from(value: ProviderKindArg) -> Self {
+        match value {
+            ProviderKindArg::Anthropic => ProviderKind::Anthropic,
+            ProviderKindArg::Openai => ProviderKind::Openai,
+            ProviderKindArg::Custom => ProviderKind::Custom,
+            ProviderKindArg::Mock => ProviderKind::Mock,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ThinkLevelArg {
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Adaptive,
+}
+
+impl From<ThinkLevelArg> for ThinkLevel {
+    fn from(value: ThinkLevelArg) -> Self {
+        match value {
+            ThinkLevelArg::Off => ThinkLevel::Off,
+            ThinkLevelArg::Minimal => ThinkLevel::Minimal,
+            ThinkLevelArg::Low => ThinkLevel::Low,
+            ThinkLevelArg::Medium => ThinkLevel::Medium,
+            ThinkLevelArg::High => ThinkLevel::High,
+            ThinkLevelArg::Xhigh => ThinkLevel::Xhigh,
+            ThinkLevelArg::Adaptive => ThinkLevel::Adaptive,
+        }
+    }
 }
 
 impl From<ChatTypeArg> for ChatType {
@@ -273,6 +364,7 @@ async fn main() -> Result<()> {
         Commands::Pairing { command } => pairing_cmd(&config, &command)?,
         Commands::Auth { command } => auth_cmd(&command).await?,
         Commands::Heartbeat { command } => heartbeat_cmd(&config, &config_path, &command).await?,
+        Commands::Agent { command } => agent_cmd(&config, &config_path, &command)?,
     }
 
     Ok(())
@@ -398,6 +490,178 @@ where
         }
         result
     });
+}
+
+fn agent_cmd(config: &RuntimeConfig, config_path: &Path, command: &AgentCommand) -> Result<()> {
+    match command {
+        AgentCommand::List => agent_list(config),
+        AgentCommand::Add {
+            id,
+            name,
+            provider,
+            model,
+            think_level,
+            provider_id,
+            system_prompt,
+        } => agent_add(
+            config,
+            config_path,
+            id,
+            name.as_deref(),
+            *provider,
+            model,
+            *think_level,
+            provider_id.as_deref(),
+            system_prompt.as_deref(),
+        ),
+        AgentCommand::Remove { id } => agent_remove(config, config_path, id),
+        AgentCommand::Show { id } => agent_show(config, id),
+    }
+}
+
+fn agent_list(config: &RuntimeConfig) -> Result<()> {
+    if config.agents.is_empty() {
+        println!("no agents configured");
+        println!("add one with: clawpod agent add <id>");
+        return Ok(());
+    }
+    println!("agents:");
+    for (id, agent) in &config.agents {
+        let provider = provider_label(&agent.provider);
+        let think = agent
+            .think_level
+            .map(|t| think_level_label(&t))
+            .unwrap_or("-");
+        println!(
+            "  @{id}  {name}  {provider}/{model}  think={think}",
+            name = agent.name,
+            model = agent.model,
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn agent_add(
+    config: &RuntimeConfig,
+    config_path: &Path,
+    id: &str,
+    name: Option<&str>,
+    provider: ProviderKindArg,
+    model: &str,
+    think_level: Option<ThinkLevelArg>,
+    provider_id: Option<&str>,
+    system_prompt: Option<&str>,
+) -> Result<()> {
+    let id = normalize_agent_id(id)?;
+    if config.agents.contains_key(&id) {
+        bail!("agent already exists: {id}");
+    }
+
+    let agent_config = AgentConfig {
+        name: name.unwrap_or(&id).to_string(),
+        provider: provider.into(),
+        model: model.to_string(),
+        think_level: think_level.map(ThinkLevel::from),
+        provider_id: provider_id.map(String::from),
+        system_prompt: system_prompt.map(String::from),
+        prompt_file: None,
+        heartbeat: None,
+    };
+
+    if agent_config.name.trim().is_empty() {
+        bail!("agent name must not be empty");
+    }
+    if agent_config.model.trim().is_empty() {
+        bail!("agent model must not be empty");
+    }
+
+    let mut updated = config.clone();
+    updated.agents.insert(id.clone(), agent_config.clone());
+    config::write_config(config_path, &updated)?;
+
+    let agent_root = updated.resolve_agent_workdir(&id);
+    if let Err(e) = agent::ensure_agent_workspace(
+        &id,
+        &agent_config,
+        &updated.agents,
+        &updated.teams,
+        &agent_root,
+    ) {
+        eprintln!("warning: failed to bootstrap workspace: {e:#}");
+    }
+
+    println!("agent '{id}' created ({}/{})", provider_label(&agent_config.provider), agent_config.model);
+    Ok(())
+}
+
+fn agent_remove(config: &RuntimeConfig, config_path: &Path, id: &str) -> Result<()> {
+    let id = normalize_agent_id(id)?;
+    if !config.agents.contains_key(&id) {
+        bail!("agent not found: {id}");
+    }
+    if config.agents.len() <= 1 {
+        bail!("cannot remove the last agent");
+    }
+    if let Some((team_id, _)) = config.teams.iter().find(|(_, team)| {
+        team.leader_agent == id || team.agents.iter().any(|a| a == &id)
+    }) {
+        bail!("agent {id} is still referenced by team {team_id}");
+    }
+
+    let mut updated = config.clone();
+    updated.agents.remove(&id);
+    config::write_config(config_path, &updated)?;
+
+    let store = StateStore::new(config.state_path())?;
+    store.clear_agent_sessions(&id)?;
+
+    println!("agent '{id}' removed");
+    Ok(())
+}
+
+fn agent_show(config: &RuntimeConfig, id: &str) -> Result<()> {
+    let agent = config.agents.get(id).ok_or_else(|| {
+        let available: Vec<&str> = config.agents.keys().map(|s| s.as_str()).collect();
+        anyhow!("agent not found: {id} (available: {})", available.join(", "))
+    })?;
+    println!("{}", serde_json::to_string_pretty(agent)?);
+    Ok(())
+}
+
+fn normalize_agent_id(id: &str) -> Result<String> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        bail!("agent id must not be empty");
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        bail!("agent id may only contain alphanumeric characters, '_', and '-'");
+    }
+    Ok(trimmed.to_string())
+}
+
+fn provider_label(provider: &ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::Openai => "openai",
+        ProviderKind::Custom => "custom",
+        ProviderKind::Mock => "mock",
+    }
+}
+
+fn think_level_label(level: &ThinkLevel) -> &'static str {
+    match level {
+        ThinkLevel::Off => "off",
+        ThinkLevel::Minimal => "minimal",
+        ThinkLevel::Low => "low",
+        ThinkLevel::Medium => "medium",
+        ThinkLevel::High => "high",
+        ThinkLevel::Xhigh => "xhigh",
+        ThinkLevel::Adaptive => "adaptive",
+    }
 }
 
 fn reset(config: &RuntimeConfig, agent_id: &str) -> Result<()> {
