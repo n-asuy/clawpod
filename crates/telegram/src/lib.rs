@@ -108,7 +108,8 @@ async fn handle_message(
         .map(|channel| channel.effective_access())
         .unwrap_or_default();
     let access_state = store.is_sender_approved("telegram", &sender_id)?;
-    match evaluate_ingress_policy(&access, chat_type, &sender_id, mentions_bot, access_state) {
+    let chat_id_str = message.chat.id.0.to_string();
+    match evaluate_ingress_policy(&access, chat_type, &sender_id, mentions_bot, access_state, Some(&chat_id_str)) {
         IngressDecision::Allow => {}
         IngressDecision::Drop { .. } => return Ok(()),
         IngressDecision::RequirePairing => {

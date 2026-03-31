@@ -569,7 +569,7 @@ async fn handle_message_event(
         .as_ref()
         .ok_or_else(|| anyhow!("slack sender access requires state store"))?;
     let access_state = store.is_sender_approved("slack", user_id)?;
-    match evaluate_ingress_policy(&access, chat_type, user_id, mentions_bot, access_state) {
+    match evaluate_ingress_policy(&access, chat_type, user_id, mentions_bot, access_state, Some(channel_id)) {
         IngressDecision::Allow => {}
         IngressDecision::Drop { reason } => {
             diagnostics.emit(
