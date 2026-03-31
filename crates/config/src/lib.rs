@@ -318,6 +318,29 @@ pub struct ChannelAccessConfig {
     pub allow_from: Vec<String>,
     #[serde(default)]
     pub group_allow_from: Vec<String>,
+    #[serde(default)]
+    pub channels: HashMap<String, PerChannelAccessConfig>,
+}
+
+fn default_per_channel_allow() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerChannelAccessConfig {
+    #[serde(default = "default_per_channel_allow")]
+    pub allow: bool,
+    #[serde(default)]
+    pub require_mention: Option<bool>,
+}
+
+impl Default for PerChannelAccessConfig {
+    fn default() -> Self {
+        Self {
+            allow: true,
+            require_mention: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,6 +357,7 @@ impl TelegramConfig {
             group_policy: GroupPolicy::MentionOnly,
             allow_from: vec![],
             group_allow_from: vec![],
+            channels: HashMap::new(),
         })
     }
 }
@@ -349,6 +373,7 @@ impl DiscordConfig {
             },
             allow_from: vec![],
             group_allow_from: vec![],
+            channels: HashMap::new(),
         })
     }
 }
@@ -360,6 +385,7 @@ impl SlackConfig {
             group_policy: GroupPolicy::MentionOnly,
             allow_from: vec![],
             group_allow_from: vec![],
+            channels: HashMap::new(),
         })
     }
 }
@@ -370,6 +396,7 @@ pub fn evaluate_ingress_policy(
     sender_id: &str,
     mentions_bot: bool,
     is_pairing_approved: bool,
+    channel_id: Option<&str>,
 ) -> IngressDecision {
     match chat_type {
         ChatType::Direct => match access.dm_policy {
@@ -394,34 +421,60 @@ pub fn evaluate_ingress_policy(
                 }
             }
         },
-        ChatType::Group | ChatType::Thread => match access.group_policy {
-            GroupPolicy::Disabled => IngressDecision::Drop {
-                reason: "group_disabled",
-            },
-            GroupPolicy::Open => IngressDecision::Allow,
-            GroupPolicy::MentionOnly => {
-                if mentions_bot {
-                    IngressDecision::Allow
-                } else {
-                    IngressDecision::Drop {
-                        reason: "mention_required",
+        ChatType::Group | ChatType::Thread => {
+            // Per-channel override: specific ID → wildcard "*" → group_policy fallback
+            if !access.channels.is_empty() {
+                if let Some(cid) = channel_id {
+                    let per_channel = access
+                        .channels
+                        .get(cid)
+                        .or_else(|| access.channels.get("*"));
+
+                    if let Some(pc) = per_channel {
+                        if !pc.allow {
+                            return IngressDecision::Drop {
+                                reason: "channel_not_allowed",
+                            };
+                        }
+                        if pc.require_mention == Some(true) && !mentions_bot {
+                            return IngressDecision::Drop {
+                                reason: "mention_required",
+                            };
+                        }
+                        return IngressDecision::Allow;
                     }
                 }
             }
-            GroupPolicy::Allowlist => {
-                if access
-                    .group_allow_from
-                    .iter()
-                    .any(|value| value == sender_id)
-                {
-                    IngressDecision::Allow
-                } else {
-                    IngressDecision::Drop {
-                        reason: "sender_not_group_allowlisted",
+
+            match access.group_policy {
+                GroupPolicy::Disabled => IngressDecision::Drop {
+                    reason: "group_disabled",
+                },
+                GroupPolicy::Open => IngressDecision::Allow,
+                GroupPolicy::MentionOnly => {
+                    if mentions_bot {
+                        IngressDecision::Allow
+                    } else {
+                        IngressDecision::Drop {
+                            reason: "mention_required",
+                        }
+                    }
+                }
+                GroupPolicy::Allowlist => {
+                    if access
+                        .group_allow_from
+                        .iter()
+                        .any(|value| value == sender_id)
+                    {
+                        IngressDecision::Allow
+                    } else {
+                        IngressDecision::Drop {
+                            reason: "sender_not_group_allowlisted",
+                        }
                     }
                 }
             }
-        },
+        }
     }
 }
 
@@ -1035,9 +1088,11 @@ pub fn read_codex_access_token() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::{
         decode_jwt_exp, evaluate_ingress_policy, parse_duration_str, ChannelAccessConfig,
-        DirectMessagePolicy, GroupPolicy, IngressDecision, RuntimeConfig,
+        DirectMessagePolicy, GroupPolicy, IngressDecision, PerChannelAccessConfig, RuntimeConfig,
     };
     use domain::ChatType;
 
@@ -1050,11 +1105,11 @@ mod tests {
         };
 
         assert_eq!(
-            evaluate_ingress_policy(&access, ChatType::Direct, "U123", false, false),
+            evaluate_ingress_policy(&access, ChatType::Direct, "U123", false, false, None),
             IngressDecision::Allow
         );
         assert_eq!(
-            evaluate_ingress_policy(&access, ChatType::Direct, "U999", false, false),
+            evaluate_ingress_policy(&access, ChatType::Direct, "U999", false, false, None),
             IngressDecision::Drop {
                 reason: "sender_not_allowlisted",
             }
@@ -1069,11 +1124,11 @@ mod tests {
         };
 
         assert_eq!(
-            evaluate_ingress_policy(&access, ChatType::Direct, "U123", false, false),
+            evaluate_ingress_policy(&access, ChatType::Direct, "U123", false, false, None),
             IngressDecision::RequirePairing
         );
         assert_eq!(
-            evaluate_ingress_policy(&access, ChatType::Direct, "U123", false, true),
+            evaluate_ingress_policy(&access, ChatType::Direct, "U123", false, true, None),
             IngressDecision::Allow
         );
     }
@@ -1086,15 +1141,178 @@ mod tests {
         };
 
         assert_eq!(
-            evaluate_ingress_policy(&access, ChatType::Group, "U123", false, false),
+            evaluate_ingress_policy(&access, ChatType::Group, "U123", false, false, None),
             IngressDecision::Drop {
                 reason: "mention_required",
             }
         );
         assert_eq!(
-            evaluate_ingress_policy(&access, ChatType::Group, "U123", true, false),
+            evaluate_ingress_policy(&access, ChatType::Group, "U123", true, false, None),
             IngressDecision::Allow
         );
+    }
+
+    #[test]
+    fn per_channel_specific_allows_wildcard_denies() {
+        let mut channels = HashMap::new();
+        channels.insert(
+            "C123".to_string(),
+            PerChannelAccessConfig {
+                allow: true,
+                require_mention: None,
+            },
+        );
+        channels.insert(
+            "*".to_string(),
+            PerChannelAccessConfig {
+                allow: false,
+                require_mention: None,
+            },
+        );
+        let access = ChannelAccessConfig {
+            group_policy: GroupPolicy::Disabled,
+            channels,
+            ..ChannelAccessConfig::default()
+        };
+
+        assert_eq!(
+            evaluate_ingress_policy(&access, ChatType::Group, "U1", false, false, Some("C123")),
+            IngressDecision::Allow
+        );
+        assert_eq!(
+            evaluate_ingress_policy(&access, ChatType::Group, "U1", false, false, Some("C999")),
+            IngressDecision::Drop {
+                reason: "channel_not_allowed"
+            }
+        );
+    }
+
+    #[test]
+    fn per_channel_require_mention() {
+        let mut channels = HashMap::new();
+        channels.insert(
+            "C123".to_string(),
+            PerChannelAccessConfig {
+                allow: true,
+                require_mention: Some(true),
+            },
+        );
+        let access = ChannelAccessConfig {
+            group_policy: GroupPolicy::Open,
+            channels,
+            ..ChannelAccessConfig::default()
+        };
+
+        assert_eq!(
+            evaluate_ingress_policy(&access, ChatType::Group, "U1", false, false, Some("C123")),
+            IngressDecision::Drop {
+                reason: "mention_required"
+            }
+        );
+        assert_eq!(
+            evaluate_ingress_policy(&access, ChatType::Group, "U1", true, false, Some("C123")),
+            IngressDecision::Allow
+        );
+    }
+
+    #[test]
+    fn empty_channels_falls_through_to_group_policy() {
+        let access = ChannelAccessConfig {
+            group_policy: GroupPolicy::MentionOnly,
+            ..ChannelAccessConfig::default()
+        };
+
+        assert_eq!(
+            evaluate_ingress_policy(&access, ChatType::Group, "U1", false, false, Some("C123")),
+            IngressDecision::Drop {
+                reason: "mention_required"
+            }
+        );
+        assert_eq!(
+            evaluate_ingress_policy(&access, ChatType::Group, "U1", true, false, Some("C123")),
+            IngressDecision::Allow
+        );
+    }
+
+    #[test]
+    fn unmatched_channel_falls_through_to_group_policy() {
+        let mut channels = HashMap::new();
+        channels.insert(
+            "C123".to_string(),
+            PerChannelAccessConfig {
+                allow: true,
+                require_mention: None,
+            },
+        );
+        let access = ChannelAccessConfig {
+            group_policy: GroupPolicy::Disabled,
+            channels,
+            ..ChannelAccessConfig::default()
+        };
+
+        assert_eq!(
+            evaluate_ingress_policy(&access, ChatType::Group, "U1", false, false, Some("C123")),
+            IngressDecision::Allow
+        );
+        assert_eq!(
+            evaluate_ingress_policy(&access, ChatType::Group, "U1", false, false, Some("C999")),
+            IngressDecision::Drop {
+                reason: "group_disabled"
+            }
+        );
+    }
+
+    #[test]
+    fn dm_ignores_per_channel_config() {
+        let mut channels = HashMap::new();
+        channels.insert(
+            "*".to_string(),
+            PerChannelAccessConfig {
+                allow: false,
+                require_mention: None,
+            },
+        );
+        let access = ChannelAccessConfig {
+            dm_policy: DirectMessagePolicy::Open,
+            channels,
+            ..ChannelAccessConfig::default()
+        };
+
+        assert_eq!(
+            evaluate_ingress_policy(&access, ChatType::Direct, "U1", false, false, Some("C123")),
+            IngressDecision::Allow
+        );
+    }
+
+    #[test]
+    fn per_channel_access_parses_from_toml() {
+        let toml_str = r#"
+bindings = []
+
+[daemon]
+home_dir = "/tmp/test"
+workspace_dir = "/tmp/test/workspace"
+poll_interval_ms = 1000
+max_concurrent_runs = 2
+
+[channels.discord]
+bot_token = "test"
+
+[channels.discord.access]
+group_policy = "open"
+
+[channels.discord.access.channels."1486343914892820500"]
+allow = true
+
+[channels.discord.access.channels."*"]
+allow = false
+"#;
+        let config: RuntimeConfig = toml::from_str(toml_str).unwrap();
+        let discord = config.channels.discord.unwrap();
+        let access = discord.effective_access();
+        assert_eq!(access.channels.len(), 2);
+        assert!(access.channels.get("1486343914892820500").unwrap().allow);
+        assert!(!access.channels.get("*").unwrap().allow);
     }
 
     #[test]

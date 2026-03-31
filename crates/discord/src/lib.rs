@@ -160,7 +160,8 @@ async fn handle_message(
     let access = channel.effective_access();
     let sender_id = message.author.id.to_string();
     let access_state = store.is_sender_approved("discord", &sender_id)?;
-    match evaluate_ingress_policy(&access, chat_type, &sender_id, mentions_bot, access_state) {
+    let channel_id_str = message.channel_id.to_string();
+    match evaluate_ingress_policy(&access, chat_type, &sender_id, mentions_bot, access_state, Some(&channel_id_str)) {
         IngressDecision::Allow => {}
         IngressDecision::Drop { .. } => return Ok(()),
         IngressDecision::RequirePairing => {
