@@ -7,11 +7,11 @@ use anyhow::{bail, Context, Result};
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::sse::{Event, Sse};
 use axum::response::{Html, Json};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{serve, Router};
 use chrono::Utc;
 use config::{ensure_runtime_dirs, write_config, RuntimeConfig};
-use domain::{AgentConfig, TeamConfig};
+use domain::{AgentConfig, BindingMatch, BindingRule, TeamConfig};
 use heartbeat::{HeartbeatLoopControl, HeartbeatService};
 use observer::{mark_component_error, mark_component_ok, snapshot_json, FileEventSink};
 use queue::{enqueue_chatroom_message, enqueue_outgoing_message, list_outgoing_messages};
@@ -119,6 +119,20 @@ struct PairingApproveRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct CreateBindingRequest {
+    agent_id: String,
+    #[serde(rename = "match", default)]
+    matcher: BindingMatch,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateBindingRequest {
+    agent_id: String,
+    #[serde(rename = "match", default)]
+    matcher: BindingMatch,
+}
+
+#[derive(Debug, Deserialize)]
 struct SaveFileRequest {
     content: String,
 }
@@ -183,6 +197,11 @@ pub async fn run(
         .route(
             "/api/teams/:team_id",
             get(get_team).put(update_team).delete(delete_team),
+        )
+        .route("/api/bindings", get(list_bindings).post(create_binding))
+        .route(
+            "/api/bindings/:index",
+            put(update_binding).delete(delete_binding),
         )
         .route("/api/access/senders", get(list_sender_access_api))
         .route(
@@ -529,6 +548,97 @@ async fn delete_team(
     Ok(Json(json!({
         "ok": true,
         "teams": next.teams,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Bindings CRUD
+// ---------------------------------------------------------------------------
+
+async fn list_bindings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    let config = state.config.read().await;
+    let bindings: Vec<Value> = config
+        .bindings
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            json!({
+                "index": i,
+                "agent_id": b.agent_id,
+                "match": b.matcher,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "bindings": bindings })))
+}
+
+async fn create_binding(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateBindingRequest>,
+) -> ApiResult<Json<Value>> {
+    let agent_id =
+        normalize_identifier(&payload.agent_id, "agent id").map_err(internal_error)?;
+    let next = mutate_config(&state, |config| {
+        if !config.agents.contains_key(&agent_id) {
+            bail!("agent not found: {agent_id}");
+        }
+        config.bindings.push(BindingRule {
+            agent_id: agent_id.clone(),
+            matcher: payload.matcher.clone(),
+        });
+        Ok(())
+    })
+    .await?;
+    emit_server_event(&state, "binding_created", json!({ "agent_id": agent_id }));
+    Ok(Json(json!({
+        "ok": true,
+        "bindings": next.bindings.len(),
+    })))
+}
+
+async fn update_binding(
+    State(state): State<AppState>,
+    AxumPath(index): AxumPath<usize>,
+    Json(payload): Json<UpdateBindingRequest>,
+) -> ApiResult<Json<Value>> {
+    let agent_id =
+        normalize_identifier(&payload.agent_id, "agent id").map_err(internal_error)?;
+    let next = mutate_config(&state, |config| {
+        if !config.agents.contains_key(&agent_id) {
+            bail!("agent not found: {agent_id}");
+        }
+        let binding = config
+            .bindings
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("binding index {index} out of range"))?;
+        binding.agent_id = agent_id.clone();
+        binding.matcher = payload.matcher.clone();
+        Ok(())
+    })
+    .await?;
+    emit_server_event(&state, "binding_updated", json!({ "index": index }));
+    Ok(Json(json!({
+        "ok": true,
+        "bindings": next.bindings.len(),
+    })))
+}
+
+async fn delete_binding(
+    State(state): State<AppState>,
+    AxumPath(index): AxumPath<usize>,
+) -> ApiResult<Json<Value>> {
+    let next = mutate_config(&state, |config| {
+        if index >= config.bindings.len() {
+            bail!("binding index {index} out of range");
+        }
+        config.bindings.remove(index);
+        Ok(())
+    })
+    .await?;
+    emit_server_event(&state, "binding_deleted", json!({ "index": index }));
+    Ok(Json(json!({
+        "ok": true,
+        "bindings": next.bindings.len(),
     })))
 }
 

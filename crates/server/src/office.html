@@ -666,6 +666,9 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
       <div class="nav-item" data-page="teams" onclick="navigate('teams')">
         <span class="nav-icon">&#9733;</span> Teams
       </div>
+      <div class="nav-item" data-page="bindings" onclick="navigate('bindings')">
+        <span class="nav-icon">&#128279;</span> Bindings
+      </div>
       <div class="nav-item" data-page="settings" onclick="navigate('settings')">
         <span class="nav-icon">&#9881;</span> Settings
       </div>
@@ -834,7 +837,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
   let pollTimer = null;
 
   const validPages = new Set([
-    'dashboard','events','agents','teams','settings',
+    'dashboard','events','agents','teams','bindings','settings',
     'runs','run-detail','sessions','responses','heartbeat','access','chatroom',
   ]);
 
@@ -872,7 +875,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
   function pageTitle(page) {
     const titles = {
       dashboard: 'Dashboard', events: 'Events', agents: 'Agents', teams: 'Teams',
-      settings: 'Settings', runs: 'Runs', 'run-detail': 'Run Detail', sessions: 'Sessions',
+      bindings: 'Bindings', settings: 'Settings', runs: 'Runs', 'run-detail': 'Run Detail', sessions: 'Sessions',
       responses: 'Pending Responses', heartbeat: 'Heartbeat', access: 'Sender Access', chatroom: 'Chatroom',
     };
     return titles[page] || page;
@@ -889,6 +892,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
         case 'events': await renderEvents(container); break;
         case 'agents': await renderAgents(container); break;
         case 'teams': await renderTeams(container); break;
+        case 'bindings': await renderBindings(container); break;
         case 'settings': await renderSettings(container); break;
         case 'runs': await renderRuns(container); break;
         case 'sessions': await renderSessions(container); break;
@@ -1320,6 +1324,112 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
       await DEL(`/api/teams/${id}`);
       toast('Team deleted', 'success');
       navigate('teams');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  /* Bindings */
+  async function renderBindings(el) {
+    const [bindingsData, agentsData] = await Promise.all([GET('/api/bindings'), GET('/api/agents')]);
+    const bindings = bindingsData.bindings || [];
+
+    $('#header-actions').innerHTML = '<button class="btn btn-primary btn-sm" onclick="showCreateBindingModal()">+ Add Binding</button>';
+
+    if (bindings.length === 0) {
+      el.innerHTML = '<div class="empty">No bindings configured. Bindings route messages from specific channels to agents.</div>';
+      return;
+    }
+
+    el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
+      <thead><tr><th>Agent</th><th>Channel</th><th>Peer ID</th><th>Group ID</th><th></th></tr></thead>
+      <tbody>
+        ${bindings.map(b => `<tr>
+          <td><span class="badge badge-blue">${escapeHtml(b.agent_id)}</span></td>
+          <td>${escapeHtml(b.match?.channel || '-')}</td>
+          <td class="mono">${escapeHtml(b.match?.peer_id || '-')}</td>
+          <td class="mono">${escapeHtml(b.match?.group_id || '-')}</td>
+          <td>
+            <div class="btn-group">
+              <button class="btn btn-sm" onclick="showEditBindingModal(${b.index})">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteBinding(${b.index})">Delete</button>
+            </div>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div></div>`;
+  }
+
+  window.showCreateBindingModal = async function() {
+    const agentsData = await GET('/api/agents');
+    const agentIds = Object.keys(agentsData.agents || {});
+    showModal('Create Binding', `
+      <div class="form-row"><label class="form-label">Agent</label>
+        <select class="form-select" id="m-bind-agent">${agentIds.map(a => `<option value="${a}">${a}</option>`).join('')}</select>
+      </div>
+      <div class="form-row"><label class="form-label">Channel</label>
+        <select class="form-select" id="m-bind-channel">
+          <option value="">-</option><option value="discord">discord</option><option value="slack">slack</option><option value="telegram">telegram</option>
+        </select>
+      </div>
+      <div class="form-row"><label class="form-label">Peer ID (channel/user ID)</label><input class="form-input" id="m-bind-peer" placeholder="e.g. 1486343914892820500"></div>
+      <div class="form-row"><label class="form-label">Group ID</label><input class="form-input" id="m-bind-group" placeholder="optional"></div>
+    `, '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitCreateBinding()">Create</button>');
+  };
+
+  window.submitCreateBinding = async function() {
+    const m = {};
+    const ch = $('#m-bind-channel').value; if (ch) m.channel = ch;
+    const peer = $('#m-bind-peer').value.trim(); if (peer) m.peer_id = peer;
+    const group = $('#m-bind-group').value.trim(); if (group) m.group_id = group;
+    try {
+      await POST('/api/bindings', { agent_id: $('#m-bind-agent').value, match: m });
+      closeModal();
+      toast('Binding created', 'success');
+      navigate('bindings');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  window.showEditBindingModal = async function(index) {
+    const [bindingsData, agentsData] = await Promise.all([GET('/api/bindings'), GET('/api/agents')]);
+    const b = (bindingsData.bindings || []).find(x => x.index === index);
+    if (!b) { toast('Binding not found', 'error'); return; }
+    const agentIds = Object.keys(agentsData.agents || {});
+    const m = b.match || {};
+    showModal(`Edit Binding #${index}`, `
+      <div class="form-row"><label class="form-label">Agent</label>
+        <select class="form-select" id="m-bind-agent">${agentIds.map(a => `<option value="${a}" ${a===b.agent_id?'selected':''}>${a}</option>`).join('')}</select>
+      </div>
+      <div class="form-row"><label class="form-label">Channel</label>
+        <select class="form-select" id="m-bind-channel">
+          <option value="">-</option>
+          <option value="discord" ${m.channel==='discord'?'selected':''}>discord</option>
+          <option value="slack" ${m.channel==='slack'?'selected':''}>slack</option>
+          <option value="telegram" ${m.channel==='telegram'?'selected':''}>telegram</option>
+        </select>
+      </div>
+      <div class="form-row"><label class="form-label">Peer ID</label><input class="form-input" id="m-bind-peer" value="${escapeHtml(m.peer_id || '')}"></div>
+      <div class="form-row"><label class="form-label">Group ID</label><input class="form-input" id="m-bind-group" value="${escapeHtml(m.group_id || '')}"></div>
+    `, `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitEditBinding(${index})">Save</button>`);
+  };
+
+  window.submitEditBinding = async function(index) {
+    const m = {};
+    const ch = $('#m-bind-channel').value; if (ch) m.channel = ch;
+    const peer = $('#m-bind-peer').value.trim(); if (peer) m.peer_id = peer;
+    const group = $('#m-bind-group').value.trim(); if (group) m.group_id = group;
+    try {
+      await PUT(`/api/bindings/${index}`, { agent_id: $('#m-bind-agent').value, match: m });
+      closeModal();
+      toast('Binding updated', 'success');
+      navigate('bindings');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  window.deleteBinding = async function(index) {
+    if (!confirm('Delete this binding?')) return;
+    try {
+      await DEL(`/api/bindings/${index}`);
+      toast('Binding deleted', 'success');
+      navigate('bindings');
     } catch (err) { toast(err.message, 'error'); }
   };
 
@@ -2026,6 +2136,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
           const refreshPages = {
             agent_created: 'agents', agent_updated: 'agents', agent_deleted: 'agents',
             team_created: 'teams', team_updated: 'teams', team_deleted: 'teams',
+            binding_created: 'bindings', binding_updated: 'bindings', binding_deleted: 'bindings',
             settings_updated: 'settings',
             sender_access_approved: 'access', sender_access_rejected: 'access',
             manual_response_queued: 'responses',
