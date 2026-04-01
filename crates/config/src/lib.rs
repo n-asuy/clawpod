@@ -1070,6 +1070,94 @@ pub fn check_codex_auth() -> CodexAuthStatus {
     }
 }
 
+// --- Claude Code credential check ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeAuthStatus {
+    pub logged_in: bool,
+    pub email: Option<String>,
+    pub org_name: Option<String>,
+    pub subscription_type: Option<String>,
+}
+
+impl ClaudeAuthStatus {
+    pub fn is_usable(&self) -> bool {
+        self.logged_in
+    }
+
+    fn not_available() -> Self {
+        Self {
+            logged_in: false,
+            email: None,
+            org_name: None,
+            subscription_type: None,
+        }
+    }
+}
+
+/// Check Claude Code login status by running `claude auth status`.
+///
+/// Returns auth details parsed from the CLI JSON output.
+/// Falls back to not-available on timeout (5s) or parse errors.
+pub fn check_claude_auth() -> ClaudeAuthStatus {
+    let mut cmd = std::process::Command::new("claude");
+    cmd.args(["auth", "status"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => return ClaudeAuthStatus::not_available(),
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return ClaudeAuthStatus::not_available();
+                }
+                let Some(stdout) = child.stdout.take() else {
+                    return ClaudeAuthStatus::not_available();
+                };
+                let json: serde_json::Value =
+                    match serde_json::from_reader(std::io::BufReader::new(stdout)) {
+                        Ok(v) => v,
+                        Err(_) => return ClaudeAuthStatus::not_available(),
+                    };
+                let logged_in = json
+                    .get("loggedIn")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                return ClaudeAuthStatus {
+                    logged_in,
+                    email: json
+                        .get("email")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    org_name: json
+                        .get("orgName")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                    subscription_type: json
+                        .get("subscriptionType")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                };
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    return ClaudeAuthStatus::not_available();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return ClaudeAuthStatus::not_available(),
+        }
+    }
+}
+
 pub fn read_codex_access_token() -> Option<String> {
     let path = codex_auth_path()?;
     let content = fs::read_to_string(&path).ok()?;
@@ -1092,7 +1180,8 @@ mod tests {
 
     use super::{
         decode_jwt_exp, evaluate_ingress_policy, parse_duration_str, ChannelAccessConfig,
-        DirectMessagePolicy, GroupPolicy, IngressDecision, PerChannelAccessConfig, RuntimeConfig,
+        ClaudeAuthStatus, DirectMessagePolicy, GroupPolicy, IngressDecision,
+        PerChannelAccessConfig, RuntimeConfig,
     };
     use domain::ChatType;
 
@@ -1556,5 +1645,26 @@ sender = "hb-bot"
 
         std::env::remove_var("CODEX_HOME");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn claude_auth_not_available_is_not_usable() {
+        let status = ClaudeAuthStatus::not_available();
+        assert!(!status.logged_in);
+        assert!(!status.is_usable());
+        assert!(status.email.is_none());
+        assert!(status.org_name.is_none());
+        assert!(status.subscription_type.is_none());
+    }
+
+    #[test]
+    fn claude_auth_logged_in_is_usable() {
+        let status = ClaudeAuthStatus {
+            logged_in: true,
+            email: Some("user@example.com".into()),
+            org_name: Some("Test Org".into()),
+            subscription_type: Some("max".into()),
+        };
+        assert!(status.is_usable());
     }
 }

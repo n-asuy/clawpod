@@ -1253,21 +1253,35 @@ async fn api_doctor(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 
     let claude_version = command_version_check("claude", &["--version"]).await;
     let codex_version = command_version_check("codex", &["--version"]).await;
+    let claude_auth = config::check_claude_auth();
     let codex_auth = config::check_codex_auth();
 
+    let has_anthropic_agents = config
+        .agents
+        .values()
+        .any(|a| matches!(a.provider, domain::ProviderKind::Anthropic));
     let has_openai_agents = config
         .agents
         .values()
         .any(|a| matches!(a.provider, domain::ProviderKind::Openai));
 
     let mut warnings: Vec<String> = vec![];
+    if has_anthropic_agents && !claude_auth.is_usable() {
+        warnings.push(
+            "Anthropic agents configured but claude is not logged in. Run 'clawpod auth claude'."
+                .into(),
+        );
+    }
     if has_openai_agents {
         if !codex_auth.auth_file_exists {
             warnings.push(
-                "OpenAI agents configured but codex is not logged in. Run 'codex login'.".into(),
+                "OpenAI agents configured but codex is not logged in. Run 'clawpod auth openai'."
+                    .into(),
             );
         } else if codex_auth.token_expired {
-            warnings.push("Codex auth token expired. Run 'codex login' to refresh.".into());
+            warnings.push(
+                "Codex auth token expired. Run 'clawpod auth openai' to refresh.".into(),
+            );
         }
     }
 
@@ -1280,6 +1294,7 @@ async fn api_doctor(State(state): State<AppState>) -> ApiResult<Json<Value>> {
             "installed": codex_version.is_some(),
             "version": codex_version.unwrap_or_default(),
         },
+        "claude_auth": claude_auth,
         "codex_auth": codex_auth,
         "warnings": warnings,
     })))

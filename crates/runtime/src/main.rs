@@ -151,6 +151,8 @@ pub enum PairingCommand {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum AuthCommand {
+    /// Login to Anthropic via claude CLI
+    Claude,
     /// Login to OpenAI via codex CLI
     Openai,
     /// Show authentication status for all providers
@@ -774,6 +776,17 @@ async fn doctor(config: &RuntimeConfig) -> Result<()> {
         Err(err) => info!("codex not available: {err}"),
     }
 
+    let claude_auth = config::check_claude_auth();
+    if claude_auth.is_usable() {
+        info!(
+            email = claude_auth.email.as_deref().unwrap_or("-"),
+            plan = claude_auth.subscription_type.as_deref().unwrap_or("-"),
+            "claude auth: valid"
+        );
+    } else {
+        info!("claude auth: not logged in, run 'claude login' if using anthropic provider");
+    }
+
     let codex_auth = config::check_codex_auth();
     if codex_auth.auth_file_exists {
         if codex_auth.is_usable() {
@@ -796,12 +809,31 @@ async fn doctor(config: &RuntimeConfig) -> Result<()> {
 
 async fn auth_cmd(command: &AuthCommand) -> Result<()> {
     match command {
+        AuthCommand::Claude => auth_claude().await,
         AuthCommand::Openai => auth_openai().await,
         AuthCommand::Status => {
+            let claude_auth = config::check_claude_auth();
+            println!("Anthropic (claude):");
+            if claude_auth.is_usable() {
+                println!("  status:  authenticated");
+                if let Some(email) = &claude_auth.email {
+                    println!("  email:   {email}");
+                }
+                if let Some(org) = &claude_auth.org_name {
+                    println!("  org:     {org}");
+                }
+                if let Some(sub) = &claude_auth.subscription_type {
+                    println!("  plan:    {sub}");
+                }
+            } else {
+                println!("  status:  not logged in (run 'clawpod auth claude')");
+            }
+            println!();
+
             let codex_auth = config::check_codex_auth();
             println!("OpenAI (codex):");
             if codex_auth.is_usable() {
-                println!("  status:  authenticated",);
+                println!("  status:  authenticated");
                 if let Some(account) = &codex_auth.account_id {
                     println!("  account: {account}");
                 }
@@ -892,6 +924,52 @@ async fn heartbeat_cmd(
             println!("heartbeat disabled");
         }
     }
+    Ok(())
+}
+
+async fn auth_claude() -> Result<()> {
+    let claude_check = Command::new("claude").arg("--version").output().await;
+    if claude_check.is_err() || !claude_check.unwrap().status.success() {
+        bail!("claude CLI not found. Install it first: https://docs.anthropic.com/en/docs/claude-code");
+    }
+
+    println!("Starting Anthropic authentication via claude CLI...");
+    println!();
+
+    let status = Command::new("claude")
+        .arg("login")
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .await
+        .context("failed to run 'claude login'")?;
+
+    if !status.success() {
+        bail!(
+            "claude login failed with exit code: {}",
+            status.code().unwrap_or(-1)
+        );
+    }
+
+    println!();
+
+    let auth = config::check_claude_auth();
+    if auth.is_usable() {
+        println!("Authentication successful.");
+        if let Some(email) = &auth.email {
+            println!("  email: {email}");
+        }
+        if let Some(org) = &auth.org_name {
+            println!("  org:   {org}");
+        }
+        if let Some(sub) = &auth.subscription_type {
+            println!("  plan:  {sub}");
+        }
+    } else {
+        println!("Warning: claude login completed but auth status could not be verified.");
+    }
+
     Ok(())
 }
 
