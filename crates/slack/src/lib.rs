@@ -789,23 +789,46 @@ async fn outgoing_loop(
                     }
                 }
                 Err(err) => {
+                    let err_str = format!("{err:#}");
                     diagnostics.emit(
                         "slack_outgoing_failed",
                         json!({
                             "recipient_id": message.recipient_id,
                             "message_id": message.message_id,
                             "path": message.path.display().to_string(),
-                            "error": err.to_string(),
+                            "error": &err_str,
                         }),
                     );
-                    mark_component_error("slack_outgoing", err.to_string());
-                    warn!(path = %message.path.display(), "slack send failed: {err:#}");
+                    mark_component_error("slack_outgoing", err_str.clone());
+                    if is_permanent_slack_send_error(&err_str) {
+                        warn!(path = %message.path.display(), "slack send permanently failed, dropping: {err_str}");
+                        if let Err(ack_err) = ack_outgoing_message(&message.path).await {
+                            error!(path = %message.path.display(), "slack ack failed: {ack_err:#}");
+                        }
+                    } else {
+                        warn!(path = %message.path.display(), "slack send failed: {err_str}");
+                    }
                 }
             }
         }
 
         sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(500))).await;
     }
+}
+
+fn is_permanent_slack_send_error(err: &str) -> bool {
+    const PATTERNS: &[&str] = &[
+        "missing_scope",
+        "not_authed",
+        "invalid_auth",
+        "account_inactive",
+        "token_revoked",
+        "channel_not_found",
+        "is_archived",
+        "not_in_channel",
+        "invalid_arguments",
+    ];
+    PATTERNS.iter().any(|p| err.contains(p))
 }
 
 async fn send_outgoing(
