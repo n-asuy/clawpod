@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocketUpgrade};
 use axum::extract::{OriginalUri, Path as AxumPath, Query, State};
-use axum::http::{header, HeaderMap, Request, StatusCode, Uri};
+use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse, Json, Redirect, Response};
 use axum::routing::{get, post, put};
@@ -23,11 +23,19 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use store::{RunEventBuffer, StateStore};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio::time::{sleep, timeout, Duration};
 use tokio_stream::wrappers::BroadcastStream;
-use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
+use tokio_tungstenite::{
+    tungstenite::{
+        handshake::{client::generate_key, derive_accept_key},
+        protocol::Role,
+        Message as TungsteniteMessage,
+    },
+    WebSocketStream,
+};
 use tower_http::cors::CorsLayer;
 use tracing::info;
 use uuid::Uuid;
@@ -413,10 +421,16 @@ async fn open_browser_view(
     if let Some(ws) = ws {
         let target_url =
             browser_backend_ws_url(route.kasm_port, &route.backend_path, original_uri.query());
-        let forwarded_headers = filtered_browser_ws_headers(&headers);
+        let origin = websocket_origin(&headers);
+        let requested_protocols = websocket_protocols(&headers);
+        let ws = if requested_protocols.is_empty() {
+            ws
+        } else {
+            ws.protocols(requested_protocols.clone())
+        };
         return Ok(ws
             .on_upgrade(move |socket| {
-                proxy_browser_websocket(socket, target_url, forwarded_headers)
+                proxy_browser_websocket(socket, target_url, origin, requested_protocols)
             })
             .into_response());
     }
@@ -425,6 +439,7 @@ async fn open_browser_view(
         &state.http_client,
         &headers,
         route.kasm_port,
+        &route.view_path,
         &route.backend_path,
         original_uri.query(),
     )
@@ -462,9 +477,17 @@ async fn open_browser_root_websocket(
 
     let target_url =
         browser_backend_ws_url(route.kasm_port, original_uri.path(), original_uri.query());
-    let forwarded_headers = filtered_browser_ws_headers(&headers);
+    let origin = websocket_origin(&headers);
+    let requested_protocols = websocket_protocols(&headers);
+    let ws = if requested_protocols.is_empty() {
+        ws
+    } else {
+        ws.protocols(requested_protocols.clone())
+    };
     Ok(ws
-        .on_upgrade(move |socket| proxy_browser_websocket(socket, target_url, forwarded_headers))
+        .on_upgrade(move |socket| {
+            proxy_browser_websocket(socket, target_url, origin, requested_protocols)
+        })
         .into_response())
 }
 
@@ -1473,6 +1496,7 @@ fn normalize_view_path(view_path: &str) -> String {
 struct BrowserViewRoute {
     profile_name: String,
     kasm_port: u16,
+    view_path: String,
     backend_path: String,
     needs_trailing_slash_redirect: bool,
 }
@@ -1490,6 +1514,7 @@ fn resolve_browser_view_route(
             return Some(BrowserViewRoute {
                 profile_name: profile.name.clone(),
                 kasm_port: profile.kasm_port,
+                view_path: view_path.clone(),
                 backend_path: "/".to_string(),
                 needs_trailing_slash_redirect: true,
             });
@@ -1500,6 +1525,7 @@ fn resolve_browser_view_route(
             return Some(BrowserViewRoute {
                 profile_name: profile.name.clone(),
                 kasm_port: profile.kasm_port,
+                view_path: view_path.clone(),
                 backend_path: "/".to_string(),
                 needs_trailing_slash_redirect: false,
             });
@@ -1509,6 +1535,7 @@ fn resolve_browser_view_route(
             return Some(BrowserViewRoute {
                 profile_name: profile.name.clone(),
                 kasm_port: profile.kasm_port,
+                view_path: view_path.clone(),
                 backend_path: format!("/{}", remainder),
                 needs_trailing_slash_redirect: false,
             });
@@ -1540,6 +1567,64 @@ fn browser_backend_ws_url(kasm_port: u16, backend_path: &str, query: Option<&str
     browser_backend_url("ws", kasm_port, backend_path, query)
 }
 
+fn websocket_protocols(headers: &HeaderMap) -> Vec<String> {
+    headers
+        .get("Sec-WebSocket-Protocol")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn websocket_origin(headers: &HeaderMap) -> Option<String> {
+    if let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+    {
+        return Some(origin.to_string());
+    }
+
+    let forwarded_proto = headers
+        .get("X-Forwarded-Proto")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty());
+    let forwarded_host = headers
+        .get("X-Forwarded-Host")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty());
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty());
+
+    match (forwarded_proto, forwarded_host.or(host)) {
+        (Some(proto), Some(host)) => Some(format!("{proto}://{host}")),
+        (None, Some(host)) => Some(format!("http://{host}")),
+        _ => None,
+    }
+}
+
+fn websocket_backend_host(target_url: &str) -> Option<&str> {
+    let target = target_url
+        .strip_prefix("ws://")
+        .or_else(|| target_url.strip_prefix("wss://"))?;
+    Some(target.split('/').next().unwrap_or(target))
+}
+
+fn websocket_backend_path_and_query(target_url: &str) -> Option<&str> {
+    let target = target_url
+        .strip_prefix("ws://")
+        .or_else(|| target_url.strip_prefix("wss://"))?;
+    target.find('/').map(|index| &target[index..])
+}
+
 fn browser_backend_url(
     scheme: &str,
     kasm_port: u16,
@@ -1558,6 +1643,7 @@ async fn proxy_browser_http(
     client: &Client,
     headers: &HeaderMap,
     kasm_port: u16,
+    view_path: &str,
     backend_path: &str,
     query: Option<&str>,
 ) -> ApiResult<Response> {
@@ -1581,6 +1667,8 @@ async fn proxy_browser_http(
         .await
         .with_context(|| format!("failed to read browser asset from {target_url}"))
         .map_err(bad_gateway_error)?;
+    let disable_cache = browser_asset_needs_rewrite(&upstream_headers, backend_path);
+    let body = rewrite_browser_asset(&upstream_headers, view_path, backend_path, body);
 
     let mut response = Response::builder().status(status);
     for (name, value) in &upstream_headers {
@@ -1588,34 +1676,71 @@ async fn proxy_browser_http(
             response = response.header(name, value);
         }
     }
+    if disable_cache {
+        response = response.header(
+            axum::http::header::CACHE_CONTROL,
+            "no-store, no-cache, must-revalidate",
+        );
+    }
     response
         .body(Body::from(body))
         .map_err(|err| internal_error(anyhow!(err)))
 }
 
+fn browser_asset_needs_rewrite(headers: &HeaderMap, backend_path: &str) -> bool {
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    backend_path == "/"
+        || backend_path.ends_with(".html")
+        || backend_path.ends_with(".js")
+        || content_type.contains("text/html")
+        || content_type.contains("javascript")
+        || content_type.contains("ecmascript")
+}
+
+fn rewrite_browser_asset(
+    headers: &HeaderMap,
+    view_path: &str,
+    backend_path: &str,
+    body: Bytes,
+) -> Bytes {
+    if !browser_asset_needs_rewrite(headers, backend_path) {
+        return body;
+    }
+
+    let Ok(source) = std::str::from_utf8(&body) else {
+        return body;
+    };
+
+    let profile_ws_path = format!(
+        "\"path\",\"{}/websockify\"",
+        normalize_view_path(view_path).trim_start_matches('/')
+    );
+    let profile_ws_input_path = format!(
+        "value=\"{}/websockify\"",
+        normalize_view_path(view_path).trim_start_matches('/')
+    );
+    let rewritten = source
+        .replace("\"path\",\"websockify\"", &profile_ws_path)
+        .replace("value=\"websockify\"", &profile_ws_input_path);
+    if rewritten == source {
+        body
+    } else {
+        Bytes::from(rewritten)
+    }
+}
+
 async fn proxy_browser_websocket(
     mut client_socket: axum::extract::ws::WebSocket,
     target_url: String,
-    headers: HeaderMap,
+    origin: Option<String>,
+    requested_protocols: Vec<String>,
 ) {
-    let mut request = match Request::builder().method("GET").uri(&target_url).body(()) {
-        Ok(request) => request,
-        Err(err) => {
-            let _ = client_socket
-                .send(WsMessage::Close(Some(CloseFrame {
-                    code: axum::extract::ws::close_code::ERROR,
-                    reason: format!("failed to build browser viewer backend request: {err}").into(),
-                })))
-                .await;
-            return;
-        }
-    };
-    for (name, value) in &headers {
-        request.headers_mut().append(name, value.clone());
-    }
-
-    let backend = connect_async(request).await;
-    let (backend_socket, _) = match backend {
+    let backend =
+        connect_browser_backend_websocket(&target_url, origin, &requested_protocols).await;
+    let backend_socket = match backend {
         Ok(value) => value,
         Err(err) => {
             let _ = client_socket
@@ -1678,6 +1803,131 @@ fn resolve_browser_view_route_from_referer(
     resolve_browser_view_route(profiles, uri.path())
 }
 
+async fn connect_browser_backend_websocket(
+    target_url: &str,
+    origin: Option<String>,
+    requested_protocols: &[String],
+) -> Result<WebSocketStream<TcpStream>> {
+    let backend_host = websocket_backend_host(target_url)
+        .ok_or_else(|| anyhow!("failed to derive backend host from {target_url}"))?;
+    let Some((backend_ip, backend_port)) = backend_host.rsplit_once(':') else {
+        bail!("failed to derive backend address from {backend_host}");
+    };
+    let backend_port: u16 = backend_port.parse()?;
+    let backend_path = websocket_backend_path_and_query(target_url)
+        .ok_or_else(|| anyhow!("failed to derive backend path from {target_url}"))?;
+
+    let mut stream = TcpStream::connect((backend_ip, backend_port))
+        .await
+        .with_context(|| {
+            format!("failed to connect to browser viewer backend tcp socket: {backend_host}")
+        })?;
+
+    let websocket_key = generate_key();
+    let mut request = format!(
+        "GET {backend_path} HTTP/1.1\r\n\
+Host: {backend_host}\r\n\
+Connection: Upgrade\r\n\
+Upgrade: websocket\r\n\
+Sec-WebSocket-Version: 13\r\n\
+Sec-WebSocket-Key: {websocket_key}\r\n"
+    );
+    if !requested_protocols.is_empty() {
+        request.push_str("Sec-WebSocket-Protocol: ");
+        request.push_str(&requested_protocols.join(", "));
+        request.push_str("\r\n");
+    }
+    if let Some(origin) = origin.as_deref() {
+        request.push_str("Origin: ");
+        request.push_str(origin);
+        request.push_str("\r\nSec-WebSocket-Origin: ");
+        request.push_str(origin);
+        request.push_str("\r\n");
+    }
+    request.push_str("\r\n");
+
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .with_context(|| {
+            format!("failed to write websocket handshake to browser viewer backend: {backend_host}")
+        })?;
+
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    let header_end = loop {
+        let read = stream.read(&mut chunk).await.with_context(|| {
+            format!(
+                "failed to read websocket handshake from browser viewer backend: {backend_host}"
+            )
+        })?;
+        if read == 0 {
+            bail!("browser viewer backend closed during websocket handshake");
+        }
+        response.extend_from_slice(&chunk[..read]);
+        if let Some(index) = response.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index + 4;
+        }
+        if response.len() > 16 * 1024 {
+            bail!("browser viewer backend websocket handshake exceeded 16 KiB");
+        }
+    };
+
+    let response_head = std::str::from_utf8(&response[..header_end])
+        .context("browser viewer backend returned non-utf8 websocket handshake")?;
+    let mut lines = response_head.split("\r\n");
+    let status_line = lines.next().unwrap_or_default();
+    if !status_line.starts_with("HTTP/1.1 101") && !status_line.starts_with("HTTP/1.0 101") {
+        let status = status_line
+            .trim()
+            .strip_prefix("HTTP/1.1 ")
+            .or_else(|| status_line.trim().strip_prefix("HTTP/1.0 "))
+            .unwrap_or(status_line.trim());
+        bail!("HTTP error: {status}");
+    }
+
+    let mut accept_key = None;
+    let mut selected_protocol = None;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("Sec-WebSocket-Accept") {
+            accept_key = Some(value.to_string());
+        } else if name.eq_ignore_ascii_case("Sec-WebSocket-Protocol") {
+            selected_protocol = Some(value.to_string());
+        }
+    }
+
+    let expected_accept_key = derive_accept_key(websocket_key.as_bytes());
+    if accept_key.as_deref() != Some(expected_accept_key.as_str()) {
+        bail!("invalid websocket accept key from browser viewer backend");
+    }
+    if !requested_protocols.is_empty() && selected_protocol.is_none() {
+        bail!("browser viewer backend did not return websocket protocol");
+    }
+    if let Some(selected_protocol) = selected_protocol.as_deref() {
+        if !requested_protocols
+            .iter()
+            .any(|protocol| protocol == selected_protocol)
+        {
+            bail!("browser viewer backend returned unexpected websocket protocol: {selected_protocol}");
+        }
+    }
+
+    Ok(WebSocketStream::from_partially_read(
+        stream,
+        response[header_end..].to_vec(),
+        Role::Client,
+        None,
+    )
+    .await)
+}
+
 fn to_backend_ws_message(message: WsMessage) -> Option<TungsteniteMessage> {
     match message {
         WsMessage::Text(text) => Some(TungsteniteMessage::Text(text.into())),
@@ -1714,38 +1964,12 @@ fn should_forward_request_header(name: &str) -> bool {
     )
 }
 
-fn should_forward_ws_request_header(name: &str) -> bool {
-    !matches!(
-        name.to_ascii_lowercase().as_str(),
-        "connection"
-            | "host"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "sec-websocket-extensions"
-            | "sec-websocket-key"
-            | "sec-websocket-version"
-            | "te"
-            | "trailer"
-            | "transfer-encoding"
-            | "upgrade"
-    )
-}
-
-fn filtered_browser_ws_headers(headers: &HeaderMap) -> HeaderMap {
-    let mut forwarded = HeaderMap::new();
-    for (name, value) in headers {
-        if should_forward_ws_request_header(name.as_str()) {
-            forwarded.append(name, value.clone());
-        }
-    }
-    forwarded
-}
-
 fn should_copy_response_header(name: &str) -> bool {
     !matches!(
         name.to_ascii_lowercase().as_str(),
-        "connection"
+        "content-encoding"
+            | "content-length"
+            | "connection"
             | "keep-alive"
             | "proxy-authenticate"
             | "proxy-authorization"
@@ -1893,10 +2117,14 @@ const OFFICE_HTML: &str = include_str!("office.html");
 #[cfg(test)]
 mod tests {
     use super::{
-        append_trailing_slash, browser_backend_http_url, filtered_browser_ws_headers,
+        append_trailing_slash, browser_asset_needs_rewrite, browser_backend_http_url,
         normalize_view_path, resolve_browser_view_route, resolve_browser_view_route_from_referer,
+        rewrite_browser_asset, websocket_backend_host, websocket_backend_path_and_query,
+        websocket_origin, websocket_protocols,
     };
-    use axum::http::{header, HeaderMap, HeaderValue, Uri};
+    use axum::body::Bytes;
+    use axum::http::Uri;
+    use axum::http::{header, header::CONTENT_TYPE, HeaderMap, HeaderValue};
     use config::ResolvedBrowserProfile;
     use std::path::PathBuf;
 
@@ -1929,6 +2157,7 @@ mod tests {
         let route = resolve_browser_view_route(&profiles, "/view/leader/assets/app.js").unwrap();
         assert_eq!(route.profile_name, "leader");
         assert_eq!(route.kasm_port, 8441);
+        assert_eq!(route.view_path, "/view/leader");
         assert_eq!(route.backend_path, "/assets/app.js");
         assert!(!route.needs_trailing_slash_redirect);
     }
@@ -1948,6 +2177,7 @@ mod tests {
         }];
 
         let route = resolve_browser_view_route(&profiles, "/view/leader").unwrap();
+        assert_eq!(route.view_path, "/view/leader");
         assert_eq!(route.backend_path, "/");
         assert!(route.needs_trailing_slash_redirect);
     }
@@ -1986,26 +2216,95 @@ mod tests {
     }
 
     #[test]
-    fn filtered_browser_ws_headers_preserves_origin_and_cookie() {
+    fn browser_asset_needs_rewrite_matches_html_and_js_assets() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            header::ORIGIN,
-            HeaderValue::from_static("https://example.com"),
-        );
-        headers.insert(header::COOKIE, HeaderValue::from_static("session=abc"));
-        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+        headers.insert(CONTENT_TYPE, "text/html".parse().unwrap());
+        assert!(browser_asset_needs_rewrite(&headers, "/"));
+        assert!(browser_asset_needs_rewrite(&headers, "/index.html"));
 
-        let filtered = filtered_browser_ws_headers(&headers);
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, "application/javascript".parse().unwrap());
+        assert!(browser_asset_needs_rewrite(&headers, "/main.bundle.js"));
+        assert!(!browser_asset_needs_rewrite(
+            &HeaderMap::new(),
+            "/favicon.ico"
+        ));
+    }
+
+    #[test]
+    fn websocket_protocols_parses_requested_protocols() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Sec-WebSocket-Protocol", "binary, base64".parse().unwrap());
+
+        assert_eq!(websocket_protocols(&headers), vec!["binary", "base64"]);
+    }
+
+    #[test]
+    fn websocket_origin_prefers_explicit_origin_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Origin", "https://example.com".parse().unwrap());
+        headers.insert("Host", "internal.example".parse().unwrap());
+
         assert_eq!(
-            filtered.get(header::ORIGIN),
-            Some(&HeaderValue::from_static("https://example.com"))
+            websocket_origin(&headers).as_deref(),
+            Some("https://example.com")
         );
+    }
+
+    #[test]
+    fn websocket_origin_falls_back_to_forwarded_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Forwarded-Proto", "https".parse().unwrap());
+        headers.insert("X-Forwarded-Host", "clawpod.example.com".parse().unwrap());
+
         assert_eq!(
-            filtered.get(header::COOKIE),
-            Some(&HeaderValue::from_static("session=abc"))
+            websocket_origin(&headers).as_deref(),
+            Some("https://clawpod.example.com")
         );
-        assert!(filtered.get(header::HOST).is_none());
-        assert!(filtered.get(header::UPGRADE).is_none());
+    }
+
+    #[test]
+    fn websocket_backend_host_includes_port() {
+        assert_eq!(
+            websocket_backend_host("ws://127.0.0.1:8441/websockify?token=abc"),
+            Some("127.0.0.1:8441")
+        );
+    }
+
+    #[test]
+    fn websocket_backend_path_preserves_query_string() {
+        assert_eq!(
+            websocket_backend_path_and_query("ws://127.0.0.1:8441/websockify?token=abc"),
+            Some("/websockify?token=abc")
+        );
+    }
+
+    #[test]
+    fn rewrite_browser_asset_scopes_websocket_path_to_profile_view() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, "application/javascript".parse().unwrap());
+        let body = Bytes::from_static(
+            br#"a.initSetting("path","websockify"),a.initSetting("host",window.location.hostname)"#,
+        );
+
+        let rewritten = rewrite_browser_asset(&headers, "/view/leader", "/main.bundle.js", body);
+        let rewritten = String::from_utf8(rewritten.to_vec()).unwrap();
+
+        assert!(rewritten.contains(r#""path","view/leader/websockify""#));
+        assert!(!rewritten.contains(r#""path","websockify""#));
+    }
+
+    #[test]
+    fn rewrite_browser_asset_updates_html_settings_path() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, "text/html".parse().unwrap());
+        let body = Bytes::from_static(
+            br#"<input id="noVNC_setting_path" type="text" value="websockify">"#,
+        );
+
+        let rewritten = rewrite_browser_asset(&headers, "/view/reviewer", "/", body);
+        let rewritten = String::from_utf8(rewritten.to_vec()).unwrap();
+
+        assert!(rewritten.contains(r#"value="view/reviewer/websockify""#));
     }
 }
