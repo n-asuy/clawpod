@@ -11,14 +11,14 @@ Implemented in the repo:
 - validation for unique `cdp_port`, `display`, `kasm_port`, and `view_path`
 - per-run browser metadata injection
 - runner env injection for `DISPLAY` and `AGENT_BROWSER_*`
+- built-in browser ensure/launch in the runner using the resolved profile metadata
 - Office visibility for browser profiles and viewer entry links
-- stable viewer entry paths that redirect to the configured KasmVNC port
+- stable viewer entry paths proxied through `/view/<profile>/`
 - Linux user-service generation for one KasmVNC unit per browser profile
 
 Still operational, not automatic:
 
 - installing KasmVNC itself on the host
-- exposing each `kasm_port` through Tailscale Serve or another reverse proxy
 - optional stronger isolation via `os_user` / `home_dir`
 
 ## Goal
@@ -250,7 +250,7 @@ Important rule:
 - path routing is not isolation
 - path routing only selects which already-isolated backend to proxy to
 
-If path proxying proves fragile for KasmVNC WebSocket behavior, the fallback should be:
+If path proxying proves fragile for a future KasmVNC release, the fallback should be:
 
 - subdomain per profile
 
@@ -396,11 +396,11 @@ This removes operator and focus collisions.
 
 ### Phase 3: Viewer Routing
 
-- expose `/view/<profile>/` in Office or a dedicated local reverse proxy
-- proxy WebSocket traffic to the configured `kasm_port`
-- show profile-aware viewer links in UI
+- expose `/view/<profile>/` in Office
+- proxy HTTP assets and WebSocket traffic to the configured `kasm_port`
+- keep `kasm_port` values internal-only and do not publish them through Tailscale Serve
 
-This gives the operator a clean stable surface.
+This gives the operator a clean stable surface without external per-profile ports.
 
 ### Phase 4: Stronger Host Isolation
 

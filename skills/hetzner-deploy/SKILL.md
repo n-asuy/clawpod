@@ -688,18 +688,14 @@ ClawPodは実行時にagentのbrowser profileから `DISPLAY=:11` / `:12` を自
 ssh root@<ip> "mkdir -p /root/.clawpod/workspace/<agent>/sessions/<session>/.claude/skills/agent-browser/scripts"
 ```
 
-> **Note**: agent-browserスキルのstart_chrome_cdp_profile.shは `.claude/skills/agent-browser/scripts/` に配置される必要がある。claude CLIのスキル探索は `.claude/skills/` を参照する。
+> **Note**: `browser.profiles` を設定した ClawPod ランタイムでは、Chrome の `cdp_port` / `profile_dir` / `DISPLAY` は runner が自動で解決して起動する。`start_chrome_cdp_profile.sh` は手動デバッグや standalone 運用時の補助として残す。
 
 ### Tailscale Serve (Remote Access)
 
-single-display構成なら6901を公開する。per-profile構成なら各 `kasm_port` を公開する:
+Office だけを公開し、viewer は同一 origin の `/view/<profile>/` で見る。per-profile の `kasm_port` は内部 backend として使い、外向きには公開しない:
 
 ```bash
-ssh root@<ip> "tailscale serve --bg --https 6901 http://localhost:6901"
-
-# per-profile example
-ssh root@<ip> "tailscale serve --bg --https 8441 http://localhost:8441"
-ssh root@<ip> "tailscale serve --bg --https 8442 http://localhost:8442"
+ssh root@<ip> "tailscale serve --bg --https 3777 http://localhost:3777"
 ```
 
 確認:
@@ -708,9 +704,12 @@ ssh root@<ip> "tailscale serve --bg --https 8442 http://localhost:8442"
 ssh root@<ip> "tailscale serve status"
 ```
 
-アクセス: `https://<tailscale-hostname>:6901`
+アクセス:
 
-> Tailscale tailnet内からのみアクセス可能。認証はTailscaleが担うため、KasmVNC側の認証は無効化済み（`-SecurityTypes None -DisableBasicAuth 1`）。
+- Office: `https://<tailscale-hostname>:3777/office`
+- Viewer: `https://<tailscale-hostname>:3777/view/<profile>/`
+
+> Tailscale tailnet内からのみアクセス可能。認証はTailscaleが担うため、KasmVNC側の認証は無効化済み（`-SecurityTypes None -DisableBasicAuth 1`）。`8441` / `8442` のような `kasm_port` は viewer proxy が内部で使うだけにする。
 
 ## Update Workflow
 

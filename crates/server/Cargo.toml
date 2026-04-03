@@ -8,19 +8,22 @@ license.workspace = true
 [dependencies]
 agent = { path = "../agent" }
 anyhow = "1.0"
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.7", features = ["json", "ws"] }
 chrono = { version = "0.4", features = ["serde"] }
 config = { path = "../config" }
 domain = { path = "../domain" }
+futures-util = "0.3"
 heartbeat = { path = "../heartbeat" }
 observer = { path = "../observer" }
 pairing = { path = "../pairing" }
 queue = { path = "../queue" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 store = { path = "../store" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-tungstenite = { version = "0.23.1", features = ["rustls-tls-webpki-roots"] }
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 uuid = { version = "1.10", features = ["v4"] }

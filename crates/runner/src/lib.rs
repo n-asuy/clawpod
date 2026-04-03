@@ -1,3 +1,5 @@
+mod browser;
+
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
@@ -40,6 +42,8 @@ impl Runner for CliRunner {
         if matches!(request.provider, ProviderKind::Mock) {
             return run_mock(request).await;
         }
+
+        browser::ensure_browser_ready(&request.metadata).await?;
 
         let provider = request.provider;
         let (program, args, mut envs) = match request.provider {
@@ -184,6 +188,9 @@ fn build_execution_envs(request: &RunRequest) -> Vec<(String, String)> {
     }
     if let Some(view_path) = request.metadata.get("browser_view_path") {
         envs.push(("AGENT_BROWSER_VIEW_PATH".to_string(), view_path.clone()));
+    }
+    if let Some(home_dir) = request.metadata.get("browser_home_dir") {
+        envs.push(("AGENT_BROWSER_HOME_DIR".to_string(), home_dir.clone()));
     }
     envs
 }
@@ -886,6 +893,10 @@ mod tests {
             "browser_view_path".to_string(),
             "/view/reviewer".to_string(),
         );
+        metadata.insert(
+            "browser_home_dir".to_string(),
+            "/srv/clawpod/reviewer-home".to_string(),
+        );
 
         let request = RunRequest {
             run_id: "00000000-0000-0000-0000-000000000001".parse().unwrap(),
@@ -927,6 +938,10 @@ mod tests {
         assert_eq!(
             env_map.get("AGENT_BROWSER_VIEW_PATH").map(String::as_str),
             Some("/view/reviewer")
+        );
+        assert_eq!(
+            env_map.get("AGENT_BROWSER_HOME_DIR").map(String::as_str),
+            Some("/srv/clawpod/reviewer-home")
         );
     }
 }

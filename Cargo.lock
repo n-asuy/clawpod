@@ -150,6 +150,7 @@ checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
 dependencies = [
  "async-trait",
  "axum-core",
+ "base64 0.22.1",
  "bytes",
  "futures-util",
  "http 1.4.0",
@@ -168,8 +169,10 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
+ "sha1",
  "sync_wrapper 1.0.2",
  "tokio",
+ "tokio-tungstenite 0.24.0",
  "tower",
  "tower-layer",
  "tower-service",
@@ -1996,8 +1999,12 @@ dependencies = [
  "async-trait",
  "chrono",
  "domain",
+ "futures-util",
+ "libc",
+ "reqwest 0.12.28",
  "serde_json",
  "tokio",
+ "tokio-tungstenite 0.23.1",
  "tracing",
 ]
 
@@ -2340,15 +2347,18 @@ dependencies = [
  "chrono",
  "config",
  "domain",
+ "futures-util",
  "heartbeat",
  "observer",
  "pairing",
  "queue",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "store",
  "tokio",
  "tokio-stream",
+ "tokio-tungstenite 0.23.1",
  "tower-http",
  "tracing",
  "uuid",
@@ -2889,6 +2899,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-tungstenite"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edc5f74e248dc973e0dbb7b74c7e0d6fcc301c694ff50049504004ef4d0cdcd9"
+dependencies = [
+ "futures-util",
+ "log",
+ "tokio",
+ "tungstenite 0.24.0",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3092,6 +3114,24 @@ dependencies = [
  "rand 0.8.5",
  "rustls 0.23.37",
  "rustls-pki-types",
+ "sha1",
+ "thiserror 1.0.69",
+ "utf-8",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18e5b8366ee7a95b16d32197d0b2604b43a0be89dc5fac9f8e96ccafbaedda8a"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "data-encoding",
+ "http 1.4.0",
+ "httparse",
+ "log",
+ "rand 0.8.5",
  "sha1",
  "thiserror 1.0.69",
  "utf-8",

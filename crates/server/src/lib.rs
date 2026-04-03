@@ -3,19 +3,23 @@ use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
-use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use anyhow::{anyhow, bail, Context, Result};
+use axum::body::Body;
+use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocketUpgrade};
+use axum::extract::{OriginalUri, Path as AxumPath, Query, State};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
-use axum::response::{Html, Json, Redirect};
+use axum::response::{Html, IntoResponse, Json, Redirect, Response};
 use axum::routing::{get, post, put};
 use axum::{serve, Router};
 use chrono::Utc;
 use config::{ensure_runtime_dirs, write_config, RuntimeConfig};
 use domain::{AgentConfig, BindingMatch, BindingRule, TeamConfig};
+use futures_util::{SinkExt, StreamExt};
 use heartbeat::{HeartbeatLoopControl, HeartbeatService};
 use observer::{mark_component_error, mark_component_ok, snapshot_json, FileEventSink};
 use queue::{enqueue_chatroom_message, enqueue_outgoing_message, list_outgoing_messages};
+use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use store::{RunEventBuffer, StateStore};
@@ -23,7 +27,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio::time::{sleep, timeout, Duration};
 use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::StreamExt;
+use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
 use tower_http::cors::CorsLayer;
 use tracing::info;
 use uuid::Uuid;
@@ -35,6 +39,7 @@ const RUNTIME_RESTART_EXIT_CODE: i32 = 75;
 struct AppState {
     config: Arc<RwLock<RuntimeConfig>>,
     config_path: PathBuf,
+    http_client: Client,
     store: StateStore,
     sink: FileEventSink,
     heartbeat_service: Option<Arc<HeartbeatService>>,
@@ -163,6 +168,7 @@ pub async fn run(
     let state = AppState {
         config: Arc::new(RwLock::new(config)),
         config_path,
+        http_client: Client::new(),
         store,
         sink,
         heartbeat_service,
@@ -386,28 +392,39 @@ async fn list_browser_profiles(State(state): State<AppState>) -> ApiResult<Json<
 async fn open_browser_view(
     State(state): State<AppState>,
     headers: HeaderMap,
-    AxumPath(rest): AxumPath<String>,
-) -> ApiResult<Redirect> {
-    let requested_path = format!("/view/{}", rest.trim_matches('/'));
+    original_uri: OriginalUri,
+    ws: Option<WebSocketUpgrade>,
+) -> ApiResult<Response> {
     let config = state.config.read().await;
-    let Some(profile) = config
-        .resolved_browser_profiles()
-        .map_err(internal_error)?
-        .into_iter()
-        .find(|profile| {
-            normalize_view_path(&profile.view_path) == normalize_view_path(&requested_path)
-        })
-    else {
+    let profiles = config.resolved_browser_profiles().map_err(internal_error)?;
+    let Some(route) = resolve_browser_view_route(&profiles, original_uri.path()) else {
         return Err((
             StatusCode::NOT_FOUND,
-            format!("browser viewer path not found: {requested_path}"),
+            format!("browser viewer path not found: {}", original_uri.path()),
         ));
     };
+    drop(config);
 
-    Ok(Redirect::temporary(&browser_viewer_url(
+    if route.needs_trailing_slash_redirect {
+        return Ok(Redirect::temporary(&append_trailing_slash(&original_uri)).into_response());
+    }
+
+    if let Some(ws) = ws {
+        let target_url =
+            browser_backend_ws_url(route.kasm_port, &route.backend_path, original_uri.query());
+        return Ok(ws
+            .on_upgrade(move |socket| proxy_browser_websocket(socket, target_url))
+            .into_response());
+    }
+
+    proxy_browser_http(
+        &state.http_client,
         &headers,
-        profile.kasm_port,
-    )))
+        route.kasm_port,
+        &route.backend_path,
+        original_uri.query(),
+    )
+    .await
 }
 
 async fn create_agent(
@@ -1386,33 +1403,241 @@ fn normalize_view_path(view_path: &str) -> String {
     }
 }
 
-fn browser_viewer_url(headers: &HeaderMap, kasm_port: u16) -> String {
-    let host = forwarded_header_value(headers, "x-forwarded-host")
-        .or_else(|| forwarded_header_value(headers, "host"))
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    let proto =
-        forwarded_header_value(headers, "x-forwarded-proto").unwrap_or_else(|| "http".to_string());
-    let host = host.split(',').next().unwrap_or("127.0.0.1").trim();
-    let host = host.split('@').next_back().unwrap_or("127.0.0.1");
-    let host_only = if host.starts_with('[') {
-        host.split("]:")
-            .next()
-            .map(|value| format!("{value}]"))
-            .unwrap_or_else(|| host.to_string())
-    } else {
-        host.split(':').next().unwrap_or(host).to_string()
-    };
-    format!("{proto}://{host_only}:{kasm_port}/")
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BrowserViewRoute {
+    profile_name: String,
+    kasm_port: u16,
+    backend_path: String,
+    needs_trailing_slash_redirect: bool,
 }
 
-fn forwarded_header_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+fn resolve_browser_view_route(
+    profiles: &[config::ResolvedBrowserProfile],
+    request_path: &str,
+) -> Option<BrowserViewRoute> {
+    let mut sorted = profiles.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|profile| std::cmp::Reverse(normalize_view_path(&profile.view_path).len()));
+
+    for profile in sorted {
+        let view_path = normalize_view_path(&profile.view_path);
+        if request_path == view_path {
+            return Some(BrowserViewRoute {
+                profile_name: profile.name.clone(),
+                kasm_port: profile.kasm_port,
+                backend_path: "/".to_string(),
+                needs_trailing_slash_redirect: true,
+            });
+        }
+
+        let prefix = format!("{view_path}/");
+        if request_path == prefix {
+            return Some(BrowserViewRoute {
+                profile_name: profile.name.clone(),
+                kasm_port: profile.kasm_port,
+                backend_path: "/".to_string(),
+                needs_trailing_slash_redirect: false,
+            });
+        }
+
+        if let Some(remainder) = request_path.strip_prefix(&prefix) {
+            return Some(BrowserViewRoute {
+                profile_name: profile.name.clone(),
+                kasm_port: profile.kasm_port,
+                backend_path: format!("/{}", remainder),
+                needs_trailing_slash_redirect: false,
+            });
+        }
+    }
+
+    None
+}
+
+fn append_trailing_slash(uri: &Uri) -> String {
+    let path = uri.path();
+    let mut next = if path.ends_with('/') {
+        path.to_string()
+    } else {
+        format!("{path}/")
+    };
+    if let Some(query) = uri.query() {
+        next.push('?');
+        next.push_str(query);
+    }
+    next
+}
+
+fn browser_backend_http_url(kasm_port: u16, backend_path: &str, query: Option<&str>) -> String {
+    browser_backend_url("http", kasm_port, backend_path, query)
+}
+
+fn browser_backend_ws_url(kasm_port: u16, backend_path: &str, query: Option<&str>) -> String {
+    browser_backend_url("ws", kasm_port, backend_path, query)
+}
+
+fn browser_backend_url(
+    scheme: &str,
+    kasm_port: u16,
+    backend_path: &str,
+    query: Option<&str>,
+) -> String {
+    let mut url = format!("{scheme}://127.0.0.1:{kasm_port}{backend_path}");
+    if let Some(query) = query.filter(|query| !query.is_empty()) {
+        url.push('?');
+        url.push_str(query);
+    }
+    url
+}
+
+async fn proxy_browser_http(
+    client: &Client,
+    headers: &HeaderMap,
+    kasm_port: u16,
+    backend_path: &str,
+    query: Option<&str>,
+) -> ApiResult<Response> {
+    let target_url = browser_backend_http_url(kasm_port, backend_path, query);
+    let mut request = client.get(&target_url);
+    for (name, value) in headers {
+        if should_forward_request_header(name.as_str()) {
+            request = request.header(name, value);
+        }
+    }
+
+    let upstream = request
+        .send()
+        .await
+        .with_context(|| format!("failed to proxy browser asset from {target_url}"))
+        .map_err(bad_gateway_error)?;
+    let status = upstream.status();
+    let upstream_headers = upstream.headers().clone();
+    let body = upstream
+        .bytes()
+        .await
+        .with_context(|| format!("failed to read browser asset from {target_url}"))
+        .map_err(bad_gateway_error)?;
+
+    let mut response = Response::builder().status(status);
+    for (name, value) in &upstream_headers {
+        if should_copy_response_header(name.as_str()) {
+            response = response.header(name, value);
+        }
+    }
+    response
+        .body(Body::from(body))
+        .map_err(|err| internal_error(anyhow!(err)))
+}
+
+async fn proxy_browser_websocket(
+    mut client_socket: axum::extract::ws::WebSocket,
+    target_url: String,
+) {
+    let backend = connect_async(&target_url).await;
+    let (backend_socket, _) = match backend {
+        Ok(value) => value,
+        Err(err) => {
+            let _ = client_socket
+                .send(WsMessage::Close(Some(CloseFrame {
+                    code: axum::extract::ws::close_code::ERROR,
+                    reason: format!("failed to connect to browser viewer backend: {err}").into(),
+                })))
+                .await;
+            return;
+        }
+    };
+
+    let (mut client_sender, mut client_receiver) = client_socket.split();
+    let (mut backend_sender, mut backend_receiver) = backend_socket.split();
+
+    let client_to_backend = async {
+        while let Some(result) = client_receiver.next().await {
+            let message = match result {
+                Ok(message) => message,
+                Err(err) => return Err(anyhow!(err)),
+            };
+            if let Some(message) = to_backend_ws_message(message) {
+                backend_sender.send(message).await?;
+            } else {
+                break;
+            }
+        }
+        let _ = backend_sender.close().await;
+        Ok::<(), anyhow::Error>(())
+    };
+
+    let backend_to_client = async {
+        while let Some(result) = backend_receiver.next().await {
+            let message = match result {
+                Ok(message) => message,
+                Err(err) => return Err(anyhow!(err)),
+            };
+            if let Some(message) = to_client_ws_message(message) {
+                client_sender.send(message).await?;
+            } else {
+                break;
+            }
+        }
+        let _ = client_sender.send(WsMessage::Close(None)).await;
+        Ok::<(), anyhow::Error>(())
+    };
+
+    tokio::select! {
+        _ = client_to_backend => {}
+        _ = backend_to_client => {}
+    }
+}
+
+fn to_backend_ws_message(message: WsMessage) -> Option<TungsteniteMessage> {
+    match message {
+        WsMessage::Text(text) => Some(TungsteniteMessage::Text(text.into())),
+        WsMessage::Binary(data) => Some(TungsteniteMessage::Binary(data)),
+        WsMessage::Ping(data) => Some(TungsteniteMessage::Ping(data)),
+        WsMessage::Pong(data) => Some(TungsteniteMessage::Pong(data)),
+        WsMessage::Close(_) => None,
+    }
+}
+
+fn to_client_ws_message(message: TungsteniteMessage) -> Option<WsMessage> {
+    match message {
+        TungsteniteMessage::Text(text) => Some(WsMessage::Text(text.to_string())),
+        TungsteniteMessage::Binary(data) => Some(WsMessage::Binary(data)),
+        TungsteniteMessage::Ping(data) => Some(WsMessage::Ping(data)),
+        TungsteniteMessage::Pong(data) => Some(WsMessage::Pong(data)),
+        TungsteniteMessage::Close(_) => None,
+        TungsteniteMessage::Frame(_) => None,
+    }
+}
+
+fn should_forward_request_header(name: &str) -> bool {
+    !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "connection"
+            | "host"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
+}
+
+fn should_copy_response_header(name: &str) -> bool {
+    !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
+}
+
+fn bad_gateway_error(err: anyhow::Error) -> (StatusCode, String) {
+    (StatusCode::BAD_GATEWAY, err.to_string())
 }
 
 async fn is_port_listening(port: u16) -> bool {
@@ -1547,8 +1772,13 @@ const OFFICE_HTML: &str = include_str!("office.html");
 
 #[cfg(test)]
 mod tests {
-    use super::{browser_viewer_url, normalize_view_path};
-    use axum::http::{HeaderMap, HeaderValue};
+    use super::{
+        append_trailing_slash, browser_backend_http_url, normalize_view_path,
+        resolve_browser_view_route,
+    };
+    use axum::http::Uri;
+    use config::ResolvedBrowserProfile;
+    use std::path::PathBuf;
 
     #[test]
     fn normalize_view_path_strips_trailing_slash() {
@@ -1557,26 +1787,56 @@ mod tests {
     }
 
     #[test]
-    fn browser_viewer_url_prefers_forwarded_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-forwarded-host",
-            HeaderValue::from_static("tailnet.example.ts.net"),
-        );
-        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-        headers.insert("host", HeaderValue::from_static("127.0.0.1:3777"));
-
-        assert_eq!(
-            browser_viewer_url(&headers, 8441),
-            "https://tailnet.example.ts.net:8441/"
-        );
+    fn append_trailing_slash_preserves_query_string() {
+        let uri: Uri = "/view/leader?foo=bar".parse().unwrap();
+        assert_eq!(append_trailing_slash(&uri), "/view/leader/?foo=bar");
     }
 
     #[test]
-    fn browser_viewer_url_replaces_host_port() {
-        let mut headers = HeaderMap::new();
-        headers.insert("host", HeaderValue::from_static("localhost:3777"));
+    fn resolve_browser_view_route_maps_assets_to_backend_root() {
+        let profiles = vec![ResolvedBrowserProfile {
+            name: "leader".to_string(),
+            cdp_port: 9410,
+            profile_dir: PathBuf::from("/tmp/leader"),
+            display: ":11".to_string(),
+            kasm_port: 8441,
+            view_path: "/view/leader".to_string(),
+            os_user: None,
+            home_dir: None,
+            driver: None,
+        }];
 
-        assert_eq!(browser_viewer_url(&headers, 8442), "http://localhost:8442/");
+        let route = resolve_browser_view_route(&profiles, "/view/leader/assets/app.js").unwrap();
+        assert_eq!(route.profile_name, "leader");
+        assert_eq!(route.kasm_port, 8441);
+        assert_eq!(route.backend_path, "/assets/app.js");
+        assert!(!route.needs_trailing_slash_redirect);
+    }
+
+    #[test]
+    fn resolve_browser_view_route_redirects_profile_root_to_slash() {
+        let profiles = vec![ResolvedBrowserProfile {
+            name: "leader".to_string(),
+            cdp_port: 9410,
+            profile_dir: PathBuf::from("/tmp/leader"),
+            display: ":11".to_string(),
+            kasm_port: 8441,
+            view_path: "/view/leader".to_string(),
+            os_user: None,
+            home_dir: None,
+            driver: None,
+        }];
+
+        let route = resolve_browser_view_route(&profiles, "/view/leader").unwrap();
+        assert_eq!(route.backend_path, "/");
+        assert!(route.needs_trailing_slash_redirect);
+    }
+
+    #[test]
+    fn browser_backend_http_url_preserves_query_string() {
+        assert_eq!(
+            browser_backend_http_url(8442, "/websockify", Some("token=abc")),
+            "http://127.0.0.1:8442/websockify?token=abc"
+        );
     }
 }

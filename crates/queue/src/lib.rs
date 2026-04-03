@@ -1106,6 +1106,12 @@ impl QueueProcessor {
                 browser_profile.kasm_port.to_string(),
             );
             metadata.insert("browser_view_path".to_string(), browser_profile.view_path);
+            if let Some(home_dir) = browser_profile.home_dir {
+                metadata.insert(
+                    "browser_home_dir".to_string(),
+                    home_dir.display().to_string(),
+                );
+            }
         }
 
         if let Some(provider_id) = &agent.provider_id {

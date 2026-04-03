@@ -8,6 +8,8 @@ allowed-tools: Bash(npx agent-browser:*), Bash(agent-browser:*), Bash(*start_chr
 
 ## CRITICAL: Always use CDP connection
 
+> ClawPod の `browser.profiles` が割り当てられた agent run では、runner が `cdp_port` / `profile_dir` / `DISPLAY` を自動で解決して Chrome を ensure する。`start_chrome_cdp_profile.sh` は standalone や手動デバッグ時の手順として扱う。
+
 **Never run `agent-browser open` directly.** Always launch Chrome via `start_chrome_cdp_profile.sh` first, then use `--cdp` flag. Direct invocation without `--cdp` will download and use a bundled Chromium instead of the system Google Chrome.
 
 ```bash
