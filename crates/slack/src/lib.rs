@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
@@ -26,11 +27,33 @@ const SLACK_DISCOVERY_REFRESH_SECS: u64 = 60;
 const SLACK_SOCKET_INITIAL_BACKOFF_MS: u64 = 1_000;
 const SLACK_SOCKET_MAX_BACKOFF_MS: u64 = 30_000;
 const SLACK_SOCKET_MAX_JITTER_MS: u64 = 250;
+const SLACK_EVENT_DEDUP_WINDOW_SECS: u64 = 300;
+
+#[derive(Default)]
+struct SlackIngressDeduper {
+    seen: Mutex<HashMap<String, Instant>>,
+}
+
+impl SlackIngressDeduper {
+    fn should_drop(&self, key: &str) -> bool {
+        let now = Instant::now();
+        let ttl = Duration::from_secs(SLACK_EVENT_DEDUP_WINDOW_SECS);
+        let mut seen = self.seen.lock().unwrap();
+        seen.retain(|_, seen_at| now.duration_since(*seen_at) < ttl);
+        if seen.contains_key(key) {
+            true
+        } else {
+            seen.insert(key.to_string(), now);
+            false
+        }
+    }
+}
 
 #[derive(Clone)]
 struct SlackDiagnostics {
     sink: Option<FileEventSink>,
     store: Option<StateStore>,
+    deduper: Arc<SlackIngressDeduper>,
 }
 
 impl SlackDiagnostics {
@@ -49,7 +72,11 @@ impl SlackDiagnostics {
                 None
             }
         };
-        Self { sink, store }
+        Self {
+            sink,
+            store,
+            deduper: Arc::new(SlackIngressDeduper::default()),
+        }
     }
 
     fn emit(&self, event_type: &str, payload: Value) {
@@ -529,6 +556,22 @@ async fn handle_message_event(
             json!({
                 "source": source,
                 "reason": "self_message",
+                "event_type": event_type,
+                "channel": channel_id,
+                "user": user_id,
+                "ts": ts,
+            }),
+        );
+        return Ok(());
+    }
+
+    let dedup_key = format!("{channel_id}:{ts}");
+    if diagnostics.deduper.should_drop(&dedup_key) {
+        diagnostics.emit(
+            "slack_event_dropped",
+            json!({
+                "source": source,
+                "reason": "duplicate_event",
                 "event_type": event_type,
                 "channel": channel_id,
                 "user": user_id,
@@ -1321,5 +1364,14 @@ mod tests {
             enriched.get("channel").and_then(Value::as_str),
             Some("D123")
         );
+    }
+
+    #[test]
+    fn ingress_deduper_drops_repeated_channel_ts() {
+        let deduper = SlackIngressDeduper::default();
+
+        assert!(!deduper.should_drop("C123:1740000000.000100"));
+        assert!(deduper.should_drop("C123:1740000000.000100"));
+        assert!(!deduper.should_drop("C123:1740000000.000101"));
     }
 }
