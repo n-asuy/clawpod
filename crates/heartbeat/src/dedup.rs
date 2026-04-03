@@ -31,10 +31,7 @@ pub fn is_duplicate_heartbeat(
         return false;
     };
 
-    let elapsed = now_dt
-        .signed_duration_since(prev_dt)
-        .num_seconds()
-        .abs();
+    let elapsed = now_dt.signed_duration_since(prev_dt).num_seconds().abs();
     elapsed < DEDUP_WINDOW_SECS
 }
 
@@ -60,7 +57,11 @@ mod tests {
 
     #[test]
     fn no_session_not_duplicate() {
-        assert!(!is_duplicate_heartbeat(None, "hello", "2026-01-01T12:00:00Z"));
+        assert!(!is_duplicate_heartbeat(
+            None,
+            "hello",
+            "2026-01-01T12:00:00Z"
+        ));
     }
 
     #[test]
@@ -75,10 +76,7 @@ mod tests {
 
     #[test]
     fn same_text_within_window_is_duplicate() {
-        let session = make_session(
-            Some("Disk at 90%"),
-            Some("2026-01-01T11:00:00Z"),
-        );
+        let session = make_session(Some("Disk at 90%"), Some("2026-01-01T11:00:00Z"));
         assert!(is_duplicate_heartbeat(
             Some(&session),
             "Disk at 90%",
@@ -88,10 +86,7 @@ mod tests {
 
     #[test]
     fn same_text_outside_window_not_duplicate() {
-        let session = make_session(
-            Some("Disk at 90%"),
-            Some("2025-12-30T00:00:00Z"),
-        );
+        let session = make_session(Some("Disk at 90%"), Some("2025-12-30T00:00:00Z"));
         assert!(!is_duplicate_heartbeat(
             Some(&session),
             "Disk at 90%",
@@ -101,10 +96,7 @@ mod tests {
 
     #[test]
     fn different_text_not_duplicate() {
-        let session = make_session(
-            Some("Disk at 90%"),
-            Some("2026-01-01T11:00:00Z"),
-        );
+        let session = make_session(Some("Disk at 90%"), Some("2026-01-01T11:00:00Z"));
         assert!(!is_duplicate_heartbeat(
             Some(&session),
             "Disk at 95%",

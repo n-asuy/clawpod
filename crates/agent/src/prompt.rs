@@ -405,6 +405,7 @@ mod tests {
             system_prompt: None,
             prompt_file: None,
             heartbeat: None,
+            browser: None,
         }
     }
 

@@ -566,6 +566,8 @@ chmod +x /root/.vnc/xstartup && \
 
 ### KasmVNC systemd Service
 
+> **Legacy note**: The single `kasmvnc.service` + global `DISPLAY=:1` flow below is only appropriate for a single shared desktop. If you configure `browser.profiles` in `clawpod.toml`, do not inject one global `DISPLAY` into ClawPod. Use one KasmVNC/Xvnc backend per browser profile instead.
+
 ```bash
 ssh root@<ip> "cat > /etc/systemd/system/kasmvnc.service << 'EOF'
 [Unit]
@@ -595,26 +597,88 @@ ssh root@<ip> "systemctl status kasmvnc --no-pager && ss -tlnp | grep 6901"
 
 `Active: active (running)` かつポート6901がLISTENしていれば成功。
 
-### DISPLAY=:1 Integration with ClawPod
+### Per-Profile KasmVNC Integration
 
-ClawPodのsystemdサービスに`DISPLAY=:1`を追加し、子プロセス（claude CLI → agent-browser → Chrome）がKasmVNCのXvncディスプレイに描画するようにする:
+推奨構成では、ClawPod全体に`DISPLAY=:1`を入れず、`browser.profiles`ごとに別display / 別websocket portを割り当てる。例えば:
+
+```toml
+[browser]
+default_profile = "default"
+
+[browser.profiles.default]
+cdp_port = 9410
+profile_dir = "~/.clawpod/browser/default"
+display = ":11"
+kasm_port = 8441
+view_path = "/view/default"
+
+[browser.profiles.reviewer]
+cdp_port = 9411
+profile_dir = "~/.clawpod/browser/reviewer"
+display = ":12"
+kasm_port = 8442
+view_path = "/view/reviewer"
+
+[agents.default.browser]
+profile = "default"
+
+[agents.reviewer.browser]
+profile = "reviewer"
+```
+
+この場合は root/system service でも次のように profile ごとに KasmVNC を分ける:
 
 ```bash
-ssh root@<ip> "sed -i '/EnvironmentFile=/i Environment=DISPLAY=:1' /etc/systemd/system/clawpod.service && \
-  systemctl daemon-reload && systemctl restart clawpod"
+ssh root@<ip> "cat > /etc/systemd/system/kasmvnc-default.service << 'EOF'
+[Unit]
+Description=KasmVNC virtual desktop (default)
+After=network.target
+
+[Service]
+Type=forking
+User=root
+ExecStartPre=/usr/bin/bash -c '/usr/bin/vncserver -kill :11 2>/dev/null || true'
+ExecStart=/usr/bin/vncserver :11 -geometry 1280x720 -depth 24 -websocketPort 8441 -SecurityTypes None -DisableBasicAuth 1
+ExecStop=/usr/bin/vncserver -kill :11
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable kasmvnc-default.service && systemctl start kasmvnc-default.service"
+
+ssh root@<ip> "cat > /etc/systemd/system/kasmvnc-reviewer.service << 'EOF'
+[Unit]
+Description=KasmVNC virtual desktop (reviewer)
+After=network.target
+
+[Service]
+Type=forking
+User=root
+ExecStartPre=/usr/bin/bash -c '/usr/bin/vncserver -kill :12 2>/dev/null || true'
+ExecStart=/usr/bin/vncserver :12 -geometry 1280x720 -depth 24 -websocketPort 8442 -SecurityTypes None -DisableBasicAuth 1
+ExecStop=/usr/bin/vncserver -kill :12
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable kasmvnc-reviewer.service && systemctl start kasmvnc-reviewer.service"
 ```
 
 確認:
 
 ```bash
-ssh root@<ip> "cat /proc/\$(pgrep -f 'clawpod daemon' | head -1)/environ | tr '\0' '\n' | grep DISPLAY"
+ssh root@<ip> "systemctl status kasmvnc-default kasmvnc-reviewer --no-pager && ss -tlnp | egrep '8441|8442'"
 ```
 
-`DISPLAY=:1` が表示されれば成功。
+ClawPodは実行時にagentのbrowser profileから `DISPLAY=:11` / `:12` を自動注入する。したがって、ClawPod本体のsystemdサービスにはグローバル `Environment=DISPLAY=...` を入れない。
 
-> **重要**: この設定をしないとagent-browserはChromeをヘッドレスで起動し、KasmVNC画面には何も表示されない。ClawPodが見ている画面とKasmVNCで見る画面を一致させるにはこの統合設定が必須。
+> **重要**: `browser.profiles` を使う構成でグローバル `DISPLAY=:1` を残すと、runごとの display ルーティングが壊れる。single-display構成か per-profile構成かを混在させないこと。
 
-> **Note**: KasmVNC（kasmvnc.service）はClawPodより先に起動している必要がある。問題発生時は `systemctl status kasmvnc` でDISPLAY :1の稼働を確認する。
+> **Note**: per-profile構成では `kasmvnc-default.service` や `kasmvnc-reviewer.service` のように display ごとに先に起動しておく。
 
 ### agent-browser Skill Deploy
 
@@ -628,10 +692,14 @@ ssh root@<ip> "mkdir -p /root/.clawpod/workspace/<agent>/sessions/<session>/.cla
 
 ### Tailscale Serve (Remote Access)
 
-Tailscale Serveで6901ポートをtailnet内に公開する。Office(3777)と同じホスト名でポート違いでアクセス可能:
+single-display構成なら6901を公開する。per-profile構成なら各 `kasm_port` を公開する:
 
 ```bash
 ssh root@<ip> "tailscale serve --bg --https 6901 http://localhost:6901"
+
+# per-profile example
+ssh root@<ip> "tailscale serve --bg --https 8441 http://localhost:8441"
+ssh root@<ip> "tailscale serve --bg --https 8442 http://localhost:8442"
 ```
 
 確認:

@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use config::RuntimeConfig;
+use config::{ResolvedBrowserProfile, RuntimeConfig};
 
 const MACOS_SERVICE_LABEL: &str = "com.clawpod.daemon";
 const LINUX_SERVICE_UNIT: &str = "clawpod.service";
+const LINUX_BROWSER_UNIT_PREFIX: &str = "clawpod-kasmvnc-";
 
 pub fn handle_command(
     command: &crate::ServiceCommand,
@@ -50,6 +51,13 @@ fn start(config: &RuntimeConfig) -> Result<()> {
     } else if cfg!(target_os = "linux") {
         run_checked(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
         run_checked(Command::new("systemctl").args(["--user", "start", LINUX_SERVICE_UNIT]))?;
+        for profile in config.resolved_browser_profiles()? {
+            run_checked(Command::new("systemctl").args([
+                "--user",
+                "start",
+                &linux_browser_unit_name(&profile.name),
+            ]))?;
+        }
         println!("service started");
         println!("stdout: {}", config.daemon_log_path().display());
         println!("stderr: {}", config.daemon_stderr_path().display());
@@ -59,7 +67,7 @@ fn start(config: &RuntimeConfig) -> Result<()> {
     }
 }
 
-fn stop(_config: &RuntimeConfig) -> Result<()> {
+fn stop(config: &RuntimeConfig) -> Result<()> {
     if cfg!(target_os = "macos") {
         let plist = macos_service_file()?;
         let _ = run_checked(
@@ -76,6 +84,13 @@ fn stop(_config: &RuntimeConfig) -> Result<()> {
         println!("service stopped");
         Ok(())
     } else if cfg!(target_os = "linux") {
+        for profile in config.resolved_browser_profiles()? {
+            let _ = run_checked(Command::new("systemctl").args([
+                "--user",
+                "stop",
+                &linux_browser_unit_name(&profile.name),
+            ]));
+        }
         let _ = run_checked(Command::new("systemctl").args(["--user", "stop", LINUX_SERVICE_UNIT]));
         println!("service stopped");
         Ok(())
@@ -120,6 +135,26 @@ fn status(config: &RuntimeConfig) -> Result<()> {
         println!("unit: {}", linux_service_file()?.display());
         println!("stdout: {}", config.daemon_log_path().display());
         println!("stderr: {}", config.daemon_stderr_path().display());
+        let profiles = config.resolved_browser_profiles()?;
+        if !profiles.is_empty() {
+            println!("browser viewers:");
+            for profile in profiles {
+                let status = run_capture(Command::new("systemctl").args([
+                    "--user",
+                    "is-active",
+                    &linux_browser_unit_name(&profile.name),
+                ]))
+                .unwrap_or_else(|_| "inactive".to_string());
+                println!(
+                    "  {name}: {status}  display={display}  websocket={port}  view={view}",
+                    name = profile.name,
+                    status = status.trim(),
+                    display = profile.display,
+                    port = profile.kasm_port,
+                    view = profile.view_path,
+                );
+            }
+        }
         return Ok(());
     }
 
@@ -144,6 +179,13 @@ fn uninstall(config: &RuntimeConfig) -> Result<()> {
         if unit.exists() {
             fs::remove_file(&unit)
                 .with_context(|| format!("failed to remove {}", unit.display()))?;
+        }
+        for profile in config.resolved_browser_profiles()? {
+            let unit = linux_browser_service_file(&profile.name)?;
+            if unit.exists() {
+                fs::remove_file(&unit)
+                    .with_context(|| format!("failed to remove {}", unit.display()))?;
+            }
         }
         run_checked(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
         println!("service uninstalled");
@@ -235,9 +277,13 @@ WantedBy=default.target
     );
     fs::write(&unit_path, unit)
         .with_context(|| format!("failed to write {}", unit_path.display()))?;
+    let browser_unit_paths = install_linux_browser_viewers(config)?;
     run_checked(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
     println!("service installed");
     println!("unit: {}", unit_path.display());
+    for path in browser_unit_paths {
+        println!("viewer unit: {}", path.display());
+    }
     Ok(())
 }
 
@@ -256,6 +302,95 @@ fn linux_service_file() -> Result<PathBuf> {
         .join("systemd")
         .join("user")
         .join(LINUX_SERVICE_UNIT))
+}
+
+fn install_linux_browser_viewers(config: &RuntimeConfig) -> Result<Vec<PathBuf>> {
+    let profiles = config.resolved_browser_profiles()?;
+    let mut unit_paths = Vec::with_capacity(profiles.len());
+    for profile in profiles {
+        let unit_path = linux_browser_service_file(&profile.name)?;
+        if let Some(parent) = unit_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let unit = render_linux_browser_unit(config, &profile)?;
+        fs::write(&unit_path, unit)
+            .with_context(|| format!("failed to write {}", unit_path.display()))?;
+        unit_paths.push(unit_path);
+    }
+    Ok(unit_paths)
+}
+
+fn render_linux_browser_unit(
+    config: &RuntimeConfig,
+    profile: &ResolvedBrowserProfile,
+) -> Result<String> {
+    let home_dir = profile
+        .home_dir
+        .clone()
+        .unwrap_or_else(|| config.home_dir());
+    let workdir = home_dir.display().to_string();
+    let stdout_path = browser_log_path(config, &profile.name)
+        .display()
+        .to_string();
+    let stderr_path = browser_stderr_path(config, &profile.name)
+        .display()
+        .to_string();
+    Ok(format!(
+        r#"[Unit]
+Description=ClawPod KasmVNC viewer ({profile_name})
+After=network.target
+
+[Service]
+Type=forking
+Environment=HOME={home_dir}
+ExecStartPre=/usr/bin/bash -lc '/usr/bin/vncserver -kill {display} 2>/dev/null || true'
+ExecStart=/usr/bin/vncserver {display} -geometry 1280x720 -depth 24 -websocketPort {kasm_port} -SecurityTypes None -DisableBasicAuth 1
+ExecStop=/usr/bin/vncserver -kill {display}
+WorkingDirectory={workdir}
+Restart=always
+RestartSec=3
+StandardOutput=append:{stdout_path}
+StandardError=append:{stderr_path}
+
+[Install]
+WantedBy=default.target
+"#,
+        profile_name = profile.name,
+        home_dir = home_dir.display(),
+        display = profile.display,
+        kasm_port = profile.kasm_port,
+        workdir = workdir,
+        stdout_path = stdout_path,
+        stderr_path = stderr_path,
+    ))
+}
+
+fn linux_browser_unit_name(profile_name: &str) -> String {
+    format!("{LINUX_BROWSER_UNIT_PREFIX}{profile_name}.service")
+}
+
+fn linux_browser_service_file(profile_name: &str) -> Result<PathBuf> {
+    let home = env::var("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home)
+        .join(".config")
+        .join("systemd")
+        .join("user")
+        .join(linux_browser_unit_name(profile_name)))
+}
+
+fn browser_log_path(config: &RuntimeConfig, profile_name: &str) -> PathBuf {
+    config
+        .home_dir()
+        .join("logs")
+        .join(format!("kasmvnc-{profile_name}.log"))
+}
+
+fn browser_stderr_path(config: &RuntimeConfig, profile_name: &str) -> PathBuf {
+    config
+        .home_dir()
+        .join("logs")
+        .join(format!("kasmvnc-{profile_name}.stderr.log"))
 }
 
 fn run_checked(command: &mut Command) -> Result<()> {

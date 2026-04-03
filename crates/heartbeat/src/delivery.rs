@@ -224,8 +224,7 @@ mod tests {
         policy.direct_policy = HeartbeatDirectPolicy::Block;
         let mut session = make_session("telegram", "C456");
         session.last_chat_type = Some("group".into());
-        let kind =
-            resolve_delivery_target(&policy, Some(&session), "default", &empty_teams());
+        let kind = resolve_delivery_target(&policy, Some(&session), "default", &empty_teams());
         assert!(kind.is_some());
     }
 
@@ -234,7 +233,12 @@ mod tests {
         let policy = base_policy(HeartbeatTarget::Chatroom);
         let teams = teams_with("default");
         let kind = resolve_delivery_target(&policy, None, "default", &teams).unwrap();
-        assert_eq!(kind, DeliveryKind::Chatroom { team_id: "dev".to_string() });
+        assert_eq!(
+            kind,
+            DeliveryKind::Chatroom {
+                team_id: "dev".to_string()
+            }
+        );
     }
 
     #[test]

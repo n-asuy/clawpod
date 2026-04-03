@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
 };
@@ -152,6 +152,43 @@ impl Default for RunnerConfig {
             timeout_sec: 120,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BrowserConfig {
+    #[serde(default)]
+    pub default_profile: Option<String>,
+    #[serde(default)]
+    pub profiles: HashMap<String, BrowserProfileConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserProfileConfig {
+    pub cdp_port: u16,
+    pub profile_dir: String,
+    pub display: String,
+    pub kasm_port: u16,
+    #[serde(default)]
+    pub view_path: Option<String>,
+    #[serde(default)]
+    pub os_user: Option<String>,
+    #[serde(default)]
+    pub home_dir: Option<String>,
+    #[serde(default)]
+    pub driver: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedBrowserProfile {
+    pub name: String,
+    pub cdp_port: u16,
+    pub profile_dir: PathBuf,
+    pub display: String,
+    pub kasm_port: u16,
+    pub view_path: String,
+    pub os_user: Option<String>,
+    pub home_dir: Option<PathBuf>,
+    pub driver: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -502,6 +539,8 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub runner: RunnerConfig,
     #[serde(default)]
+    pub browser: BrowserConfig,
+    #[serde(default)]
     pub heartbeat: HeartbeatConfig,
     #[serde(default)]
     pub agent_defaults: Option<AgentDefaultsConfig>,
@@ -533,6 +572,7 @@ impl Default for RuntimeConfig {
                 system_prompt: None,
                 prompt_file: None,
                 heartbeat: None,
+                browser: None,
             },
         );
 
@@ -543,6 +583,7 @@ impl Default for RuntimeConfig {
             session: SessionConfig::default(),
             chain: ChainConfig::default(),
             runner: RunnerConfig::default(),
+            browser: BrowserConfig::default(),
             heartbeat: HeartbeatConfig::default(),
             agent_defaults: None,
             agents,
@@ -578,6 +619,8 @@ impl RuntimeConfig {
                 bail!("custom_providers.{provider_id} requires api_key or api_key_env");
             }
         }
+
+        self.validate_browser_profiles()?;
 
         Ok(())
     }
@@ -632,6 +675,78 @@ impl RuntimeConfig {
 
     pub fn resolve_agent_workdir(&self, agent_id: &str) -> PathBuf {
         self.workspace_dir().join(agent_id)
+    }
+
+    pub fn resolve_browser_profile_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<ResolvedBrowserProfile>> {
+        let agent = self
+            .agents
+            .get(agent_id)
+            .with_context(|| format!("agent not found: {agent_id}"))?;
+        let profile_name = agent
+            .browser
+            .as_ref()
+            .and_then(|browser| browser.profile.as_deref())
+            .or(self.browser.default_profile.as_deref());
+
+        let Some(profile_name) = profile_name else {
+            return Ok(None);
+        };
+
+        let profile = self
+            .browser
+            .profiles
+            .get(profile_name)
+            .with_context(|| format!("browser profile not found: {profile_name}"))?;
+
+        Ok(Some(ResolvedBrowserProfile {
+            name: profile_name.to_string(),
+            cdp_port: profile.cdp_port,
+            profile_dir: self.resolve_browser_path(&profile.profile_dir),
+            display: profile.display.clone(),
+            kasm_port: profile.kasm_port,
+            view_path: self.default_browser_view_path(profile_name, profile.view_path.as_deref()),
+            os_user: profile.os_user.clone(),
+            home_dir: profile
+                .home_dir
+                .as_deref()
+                .map(|home| self.resolve_browser_path(home)),
+            driver: profile.driver.clone(),
+        }))
+    }
+
+    pub fn resolve_browser_profile(&self, profile_name: &str) -> Result<ResolvedBrowserProfile> {
+        let profile = self
+            .browser
+            .profiles
+            .get(profile_name)
+            .with_context(|| format!("browser profile not found: {profile_name}"))?;
+
+        Ok(ResolvedBrowserProfile {
+            name: profile_name.to_string(),
+            cdp_port: profile.cdp_port,
+            profile_dir: self.resolve_browser_path(&profile.profile_dir),
+            display: profile.display.clone(),
+            kasm_port: profile.kasm_port,
+            view_path: self.default_browser_view_path(profile_name, profile.view_path.as_deref()),
+            os_user: profile.os_user.clone(),
+            home_dir: profile
+                .home_dir
+                .as_deref()
+                .map(|home| self.resolve_browser_path(home)),
+            driver: profile.driver.clone(),
+        })
+    }
+
+    pub fn resolved_browser_profiles(&self) -> Result<Vec<ResolvedBrowserProfile>> {
+        let mut profile_names: Vec<_> = self.browser.profiles.keys().cloned().collect();
+        profile_names.sort();
+        profile_names
+            .iter()
+            .map(|profile_name| self.resolve_browser_profile(profile_name))
+            .collect()
     }
 
     pub fn server_bind_host(&self) -> &str {
@@ -787,6 +902,106 @@ impl RuntimeConfig {
             );
         }
     }
+
+    fn validate_browser_profiles(&self) -> Result<()> {
+        if let Some(default_profile) = self.browser.default_profile.as_deref() {
+            if !self.browser.profiles.contains_key(default_profile) {
+                bail!("browser.default_profile references unknown profile: {default_profile}");
+            }
+        }
+
+        let mut seen_cdp_ports = HashSet::new();
+        let mut seen_displays = HashSet::new();
+        let mut seen_kasm_ports = HashSet::new();
+        let mut seen_view_paths = HashSet::new();
+
+        for (profile_name, profile) in &self.browser.profiles {
+            if !is_valid_profile_name(profile_name) {
+                bail!(
+                    "browser.profiles.{profile_name} is invalid; profile names may only contain letters, numbers, '_' and '-'"
+                );
+            }
+            if profile.cdp_port == 0 {
+                bail!("browser.profiles.{profile_name}.cdp_port must be greater than 0");
+            }
+            if profile.kasm_port == 0 {
+                bail!("browser.profiles.{profile_name}.kasm_port must be greater than 0");
+            }
+            if profile.profile_dir.trim().is_empty() {
+                bail!("browser.profiles.{profile_name}.profile_dir must not be empty");
+            }
+            if profile.display.trim().is_empty() {
+                bail!("browser.profiles.{profile_name}.display must not be empty");
+            }
+            if !seen_cdp_ports.insert(profile.cdp_port) {
+                bail!(
+                    "browser.profiles.{profile_name}.cdp_port duplicates another profile: {}",
+                    profile.cdp_port
+                );
+            }
+            if !seen_displays.insert(profile.display.as_str()) {
+                bail!(
+                    "browser.profiles.{profile_name}.display duplicates another profile: {}",
+                    profile.display
+                );
+            }
+            if !seen_kasm_ports.insert(profile.kasm_port) {
+                bail!(
+                    "browser.profiles.{profile_name}.kasm_port duplicates another profile: {}",
+                    profile.kasm_port
+                );
+            }
+            if let Some(view_path) = profile.view_path.as_deref() {
+                if view_path.trim().is_empty() {
+                    bail!("browser.profiles.{profile_name}.view_path must not be empty");
+                }
+                if !view_path.starts_with('/') {
+                    bail!(
+                        "browser.profiles.{profile_name}.view_path must start with '/': {view_path}"
+                    );
+                }
+                if !seen_view_paths.insert(view_path) {
+                    bail!(
+                        "browser.profiles.{profile_name}.view_path duplicates another profile: {view_path}"
+                    );
+                }
+            }
+        }
+
+        for (agent_id, agent) in &self.agents {
+            let Some(profile_name) = agent
+                .browser
+                .as_ref()
+                .and_then(|browser| browser.profile.as_deref())
+            else {
+                continue;
+            };
+
+            if !self.browser.profiles.contains_key(profile_name) {
+                bail!(
+                    "agents.{agent_id}.browser.profile references unknown profile: {profile_name}"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn resolve_browser_path(&self, raw: &str) -> PathBuf {
+        let path = expand_tilde(raw);
+        if path.is_absolute() {
+            path
+        } else {
+            self.home_dir().join(path)
+        }
+    }
+
+    fn default_browser_view_path(&self, profile_name: &str, configured: Option<&str>) -> String {
+        configured
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("/view/{profile_name}"))
+    }
 }
 
 pub fn default_config_path() -> PathBuf {
@@ -857,6 +1072,23 @@ pub fn ensure_runtime_dirs(config: &RuntimeConfig) -> Result<()> {
             .with_context(|| format!("failed to create agent workdir: {}", workdir.display()))?;
     }
 
+    for profile in config.browser.profiles.values() {
+        let profile_dir = config.resolve_browser_path(&profile.profile_dir);
+        fs::create_dir_all(&profile_dir).with_context(|| {
+            format!(
+                "failed to create browser profile dir: {}",
+                profile_dir.display()
+            )
+        })?;
+
+        if let Some(home_dir) = profile.home_dir.as_deref() {
+            let home_dir = config.resolve_browser_path(home_dir);
+            fs::create_dir_all(&home_dir).with_context(|| {
+                format!("failed to create browser home dir: {}", home_dir.display())
+            })?;
+        }
+    }
+
     Ok(())
 }
 
@@ -878,6 +1110,13 @@ fn expand_tilde(raw: &str) -> PathBuf {
 
 fn default_server_host() -> String {
     "127.0.0.1".to_string()
+}
+
+fn is_valid_profile_name(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
 impl ServerConfig {
@@ -1132,10 +1371,7 @@ pub fn check_claude_auth() -> ClaudeAuthStatus {
                     .unwrap_or(false);
                 return ClaudeAuthStatus {
                     logged_in,
-                    email: json
-                        .get("email")
-                        .and_then(|v| v.as_str())
-                        .map(String::from),
+                    email: json.get("email").and_then(|v| v.as_str()).map(String::from),
                     org_name: json
                         .get("orgName")
                         .and_then(|v| v.as_str())
@@ -1177,6 +1413,7 @@ pub fn read_codex_access_token() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
 
     use super::{
         decode_jwt_exp, evaluate_ingress_policy, parse_duration_str, ChannelAccessConfig,
@@ -1184,6 +1421,8 @@ mod tests {
         PerChannelAccessConfig, RuntimeConfig,
     };
     use domain::ChatType;
+
+    static CODEX_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn allowlist_dm_requires_explicit_sender() {
@@ -1439,6 +1678,7 @@ allow = false
 
     #[test]
     fn codex_auth_missing_file() {
+        let _guard = CODEX_ENV_LOCK.lock().unwrap();
         // Point to a nonexistent path
         std::env::set_var("CODEX_HOME", "/tmp/clawpod-test-nonexistent-dir");
         let status = super::check_codex_auth();
@@ -1453,7 +1693,9 @@ allow = false
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
 
-        let tmp = std::env::temp_dir().join("clawpod-test-codex-valid");
+        let _guard = CODEX_ENV_LOCK.lock().unwrap();
+        let tmp =
+            std::env::temp_dir().join(format!("clawpod-test-codex-valid-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
 
         let exp = chrono::Utc::now().timestamp() + 3600;
@@ -1542,6 +1784,91 @@ ack_max_chars = 200
     }
 
     #[test]
+    fn config_with_browser_profiles_parses_and_resolves() {
+        let toml = r#"
+[browser]
+default_profile = "default"
+
+[browser.profiles.default]
+cdp_port = 9410
+profile_dir = "browser/default"
+display = ":11"
+kasm_port = 8441
+view_path = "/view/default"
+
+[agents.default]
+name = "Default"
+model = "claude-sonnet-4-6"
+
+[agents.default.browser]
+profile = "default"
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+
+        let resolved = config
+            .resolve_browser_profile_for_agent("default")
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.name, "default");
+        assert_eq!(resolved.cdp_port, 9410);
+        assert_eq!(resolved.display, ":11");
+        assert_eq!(resolved.kasm_port, 8441);
+        assert_eq!(resolved.view_path, "/view/default");
+        assert_eq!(
+            resolved.profile_dir,
+            config.home_dir().join("browser").join("default")
+        );
+    }
+
+    #[test]
+    fn browser_validation_rejects_unknown_agent_profile() {
+        let toml = r#"
+[browser.profiles.default]
+cdp_port = 9410
+profile_dir = "~/.clawpod/browser/default"
+display = ":11"
+kasm_port = 8441
+
+[agents.default]
+name = "Default"
+model = "claude-sonnet-4-6"
+
+[agents.default.browser]
+profile = "missing"
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("agents.default.browser.profile"));
+        assert!(err.contains("missing"));
+    }
+
+    #[test]
+    fn browser_validation_rejects_duplicate_display() {
+        let toml = r#"
+[browser.profiles.default]
+cdp_port = 9410
+profile_dir = "~/.clawpod/browser/default"
+display = ":11"
+kasm_port = 8441
+
+[browser.profiles.reviewer]
+cdp_port = 9411
+profile_dir = "~/.clawpod/browser/reviewer"
+display = ":11"
+kasm_port = 8442
+
+[agents.default]
+name = "Default"
+model = "claude-sonnet-4-6"
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("display duplicates another profile"));
+        assert!(err.contains(":11"));
+    }
+
+    #[test]
     fn config_with_agent_defaults_heartbeat_parses() {
         let toml = r#"
 [agent_defaults.heartbeat]
@@ -1620,7 +1947,9 @@ sender = "hb-bot"
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
 
-        let tmp = std::env::temp_dir().join("clawpod-test-codex-expired");
+        let _guard = CODEX_ENV_LOCK.lock().unwrap();
+        let tmp =
+            std::env::temp_dir().join(format!("clawpod-test-codex-expired-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp);
 
         let exp = chrono::Utc::now().timestamp() - 100;

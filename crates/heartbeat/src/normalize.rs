@@ -40,7 +40,8 @@ pub fn normalize_heartbeat_output(output: &str, ack_max_chars: usize) -> Normali
 
     // Try stripping at start
     let after_start = if let Some(rest) = unwrapped.strip_prefix(TOKEN) {
-        rest.trim_start_matches(['.', '!', ',', ';', ':', '-']).trim()
+        rest.trim_start_matches(['.', '!', ',', ';', ':', '-'])
+            .trim()
     } else {
         unwrapped
     };
@@ -76,19 +77,34 @@ mod tests {
 
     #[test]
     fn pure_heartbeat_ok() {
-        assert_eq!(normalize_heartbeat_output("HEARTBEAT_OK", 300), NormalizeResult::AckOnly);
+        assert_eq!(
+            normalize_heartbeat_output("HEARTBEAT_OK", 300),
+            NormalizeResult::AckOnly
+        );
     }
 
     #[test]
     fn heartbeat_ok_with_whitespace() {
-        assert_eq!(normalize_heartbeat_output("  HEARTBEAT_OK  ", 300), NormalizeResult::AckOnly);
+        assert_eq!(
+            normalize_heartbeat_output("  HEARTBEAT_OK  ", 300),
+            NormalizeResult::AckOnly
+        );
     }
 
     #[test]
     fn heartbeat_ok_markdown_wrapped() {
-        assert_eq!(normalize_heartbeat_output("**HEARTBEAT_OK**", 300), NormalizeResult::AckOnly);
-        assert_eq!(normalize_heartbeat_output("`HEARTBEAT_OK`", 300), NormalizeResult::AckOnly);
-        assert_eq!(normalize_heartbeat_output("```\nHEARTBEAT_OK\n```", 300), NormalizeResult::AckOnly);
+        assert_eq!(
+            normalize_heartbeat_output("**HEARTBEAT_OK**", 300),
+            NormalizeResult::AckOnly
+        );
+        assert_eq!(
+            normalize_heartbeat_output("`HEARTBEAT_OK`", 300),
+            NormalizeResult::AckOnly
+        );
+        assert_eq!(
+            normalize_heartbeat_output("```\nHEARTBEAT_OK\n```", 300),
+            NormalizeResult::AckOnly
+        );
     }
 
     #[test]
@@ -111,10 +127,8 @@ mod tests {
 
     #[test]
     fn heartbeat_ok_in_middle_is_alert() {
-        let result = normalize_heartbeat_output(
-            "Status is HEARTBEAT_OK but there are warnings",
-            300,
-        );
+        let result =
+            normalize_heartbeat_output("Status is HEARTBEAT_OK but there are warnings", 300);
         assert_eq!(
             result,
             NormalizeResult::Alert("Status is HEARTBEAT_OK but there are warnings".to_string())
@@ -130,8 +144,14 @@ mod tests {
 
     #[test]
     fn empty_output_is_ack_only() {
-        assert_eq!(normalize_heartbeat_output("", 300), NormalizeResult::AckOnly);
-        assert_eq!(normalize_heartbeat_output("   ", 300), NormalizeResult::AckOnly);
+        assert_eq!(
+            normalize_heartbeat_output("", 300),
+            NormalizeResult::AckOnly
+        );
+        assert_eq!(
+            normalize_heartbeat_output("   ", 300),
+            NormalizeResult::AckOnly
+        );
     }
 
     #[test]

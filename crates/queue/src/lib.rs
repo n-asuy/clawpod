@@ -326,11 +326,10 @@ impl QueueProcessor {
         // over bindings so that "@agent foo" followed by "bar" keeps going
         // to the same agent.
         if !was_explicit_mention && !is_internal_channel(&event.channel) {
-            if let Ok(Some(affinity_agent)) = self.store.get_routing_affinity(
-                &event.channel,
-                &event.peer_id,
-                &event.sender_id,
-            ) {
+            if let Ok(Some(affinity_agent)) =
+                self.store
+                    .get_routing_affinity(&event.channel, &event.peer_id, &event.sender_id)
+            {
                 if self.config.agents.contains_key(&affinity_agent) {
                     route.agent_id = affinity_agent.clone();
                 }
@@ -567,9 +566,8 @@ impl QueueProcessor {
                     }
                 }
 
-                let display_text = strip_route_to_tags(
-                    &convert_mentions_to_readable(&text, &agent_id),
-                );
+                let display_text =
+                    strip_route_to_tags(&convert_mentions_to_readable(&text, &agent_id));
                 let prepared = self
                     .prepare_outbound_payload(
                         &display_text,
@@ -1092,6 +1090,24 @@ impl QueueProcessor {
             metadata.insert("system_preamble".to_string(), preamble);
         }
 
+        if let Some(browser_profile) = self.config.resolve_browser_profile_for_agent(agent_id)? {
+            metadata.insert("browser_profile".to_string(), browser_profile.name);
+            metadata.insert(
+                "browser_cdp_port".to_string(),
+                browser_profile.cdp_port.to_string(),
+            );
+            metadata.insert(
+                "browser_profile_dir".to_string(),
+                browser_profile.profile_dir.display().to_string(),
+            );
+            metadata.insert("browser_display".to_string(), browser_profile.display);
+            metadata.insert(
+                "browser_kasm_port".to_string(),
+                browser_profile.kasm_port.to_string(),
+            );
+            metadata.insert("browser_view_path".to_string(), browser_profile.view_path);
+        }
+
         if let Some(provider_id) = &agent.provider_id {
             let provider = self
                 .config
@@ -1497,12 +1513,38 @@ fn apply_custom_provider_metadata(
 mod tests {
     use super::*;
     use std::env;
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct NoopRunner;
+
+    #[async_trait::async_trait]
+    impl Runner for NoopRunner {
+        async fn run(&self, _request: RunRequest) -> Result<domain::RunResult> {
+            Err(anyhow!("noop runner should not be called in tests"))
+        }
+    }
 
     fn temp_state_path(label: &str) -> PathBuf {
         env::temp_dir().join(format!(
             "clawpod-queue-{label}-{}.json",
             Uuid::new_v4().simple()
         ))
+    }
+
+    fn make_queue_processor(config: RuntimeConfig, label: &str) -> QueueProcessor {
+        let state_path = temp_state_path(label);
+        let sink_path = env::temp_dir().join(format!(
+            "clawpod-queue-events-{label}-{}.jsonl",
+            Uuid::new_v4().simple()
+        ));
+        QueueProcessor::new(
+            config,
+            Arc::new(NoopRunner),
+            StateStore::new(&state_path).expect("store"),
+            FileEventSink::new(&sink_path).expect("sink"),
+            Arc::new(RunEventBuffer::new(10, 100)),
+        )
     }
 
     fn sample_event(channel: &str, peer_id: &str, sender_id: &str) -> InboundEvent {
@@ -1589,14 +1631,64 @@ mod tests {
     }
 
     #[test]
+    fn build_run_metadata_includes_resolved_browser_profile() {
+        let mut config = RuntimeConfig::default();
+        config.daemon.home_dir = "~/clawpod-test-home".to_string();
+        config.browser.default_profile = Some("default".to_string());
+        config.browser.profiles.insert(
+            "default".to_string(),
+            config::BrowserProfileConfig {
+                cdp_port: 9410,
+                profile_dir: "browser/default".to_string(),
+                display: ":11".to_string(),
+                kasm_port: 8441,
+                view_path: Some("/view/default".to_string()),
+                os_user: None,
+                home_dir: None,
+                driver: None,
+            },
+        );
+        let processor = make_queue_processor(config.clone(), "browser-metadata");
+
+        let metadata = processor
+            .build_run_metadata_for_agent("default", None)
+            .expect("metadata");
+
+        assert_eq!(
+            metadata.get("browser_profile").map(String::as_str),
+            Some("default")
+        );
+        assert_eq!(
+            metadata.get("browser_cdp_port").map(String::as_str),
+            Some("9410")
+        );
+        assert_eq!(
+            metadata.get("browser_display").map(String::as_str),
+            Some(":11")
+        );
+        assert_eq!(
+            metadata.get("browser_kasm_port").map(String::as_str),
+            Some("8441")
+        );
+        assert_eq!(
+            metadata.get("browser_view_path").map(String::as_str),
+            Some("/view/default")
+        );
+        assert_eq!(
+            metadata.get("browser_profile_dir").map(String::as_str),
+            Some(config.home_dir().join("browser/default").to_str().unwrap())
+        );
+    }
+
+    #[test]
     fn external_messages_update_scoped_and_main_sessions() {
         let path = temp_state_path("session-context");
         let store = StateStore::new(&path).expect("store");
         let event = sample_event("slack", "D123", "U123");
-        let session_key = build_session_key("leader", &event, domain::DmScope::PerChannelPeer, "main");
+        let session_key =
+            build_session_key("leader", &event, domain::DmScope::PerChannelPeer, "main");
 
-        record_session_context(&store, "leader", &event, &session_key, "main")
-            .expect("record");
+        record_session_context(&store, "leader", &event, &session_key, "main").expect("record");
 
         let scoped = store
             .get_session(&session_key)

@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use axum::extract::{Path as AxumPath, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
-use axum::response::{Html, Json};
+use axum::response::{Html, Json, Redirect};
 use axum::routing::{get, post, put};
 use axum::{serve, Router};
 use chrono::Utc;
@@ -18,9 +19,9 @@ use queue::{enqueue_chatroom_message, enqueue_outgoing_message, list_outgoing_me
 use serde::Deserialize;
 use serde_json::{json, Value};
 use store::{RunEventBuffer, StateStore};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
@@ -29,8 +30,6 @@ use uuid::Uuid;
 
 type ApiResult<T> = std::result::Result<T, (StatusCode, String)>;
 const RUNTIME_RESTART_EXIT_CODE: i32 = 75;
-
-use axum::http::StatusCode;
 
 #[derive(Clone)]
 struct AppState {
@@ -180,10 +179,12 @@ pub async fn run(
         .route("/api/settings", get(get_settings).put(update_settings))
         .route("/api/runtime/restart", post(restart_runtime))
         .route("/api/agents", get(list_agents).post(create_agent))
+        .route("/api/browser/profiles", get(list_browser_profiles))
         .route(
             "/api/agents/:agent_id",
             get(get_agent).put(update_agent).delete(delete_agent),
         )
+        .route("/view/*rest", get(open_browser_view))
         .route(
             "/api/agents/:agent_id/sessions/clear",
             post(clear_agent_sessions_api),
@@ -352,6 +353,61 @@ async fn get_agent(
         ));
     };
     Ok(Json(json!({ "id": agent_id, "agent": agent })))
+}
+
+async fn list_browser_profiles(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    let config = state.config.read().await;
+    let mut profiles = Vec::new();
+    for profile in config.resolved_browser_profiles().map_err(internal_error)? {
+        let assigned_agents = agents_for_browser_profile(&config, &profile.name);
+        let kasm_listening = is_port_listening(profile.kasm_port).await;
+        let cdp_listening = is_port_listening(profile.cdp_port).await;
+        profiles.push(json!({
+            "name": profile.name,
+            "cdp_port": profile.cdp_port,
+            "profile_dir": profile.profile_dir.display().to_string(),
+            "display": profile.display,
+            "kasm_port": profile.kasm_port,
+            "view_path": profile.view_path,
+            "os_user": profile.os_user,
+            "home_dir": profile.home_dir.map(|path| path.display().to_string()),
+            "driver": profile.driver,
+            "assigned_agents": assigned_agents,
+            "kasm_listening": kasm_listening,
+            "cdp_listening": cdp_listening,
+        }));
+    }
+    Ok(Json(json!({
+        "default_profile": config.browser.default_profile,
+        "profiles": profiles,
+    })))
+}
+
+async fn open_browser_view(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(rest): AxumPath<String>,
+) -> ApiResult<Redirect> {
+    let requested_path = format!("/view/{}", rest.trim_matches('/'));
+    let config = state.config.read().await;
+    let Some(profile) = config
+        .resolved_browser_profiles()
+        .map_err(internal_error)?
+        .into_iter()
+        .find(|profile| {
+            normalize_view_path(&profile.view_path) == normalize_view_path(&requested_path)
+        })
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("browser viewer path not found: {requested_path}"),
+        ));
+    };
+
+    Ok(Redirect::temporary(&browser_viewer_url(
+        &headers,
+        profile.kasm_port,
+    )))
 }
 
 async fn create_agent(
@@ -576,8 +632,7 @@ async fn create_binding(
     State(state): State<AppState>,
     Json(payload): Json<CreateBindingRequest>,
 ) -> ApiResult<Json<Value>> {
-    let agent_id =
-        normalize_identifier(&payload.agent_id, "agent id").map_err(internal_error)?;
+    let agent_id = normalize_identifier(&payload.agent_id, "agent id").map_err(internal_error)?;
     let next = mutate_config(&state, |config| {
         if !config.agents.contains_key(&agent_id) {
             bail!("agent not found: {agent_id}");
@@ -601,8 +656,7 @@ async fn update_binding(
     AxumPath(index): AxumPath<usize>,
     Json(payload): Json<UpdateBindingRequest>,
 ) -> ApiResult<Json<Value>> {
-    let agent_id =
-        normalize_identifier(&payload.agent_id, "agent id").map_err(internal_error)?;
+    let agent_id = normalize_identifier(&payload.agent_id, "agent id").map_err(internal_error)?;
     let next = mutate_config(&state, |config| {
         if !config.agents.contains_key(&agent_id) {
             bail!("agent not found: {agent_id}");
@@ -1306,6 +1360,70 @@ fn validate_agent_config(agent: &AgentConfig) -> Result<()> {
     Ok(())
 }
 
+fn agents_for_browser_profile(config: &RuntimeConfig, profile_name: &str) -> Vec<String> {
+    let mut agents = config
+        .agents
+        .iter()
+        .filter_map(|(agent_id, agent)| {
+            let selected = agent
+                .browser
+                .as_ref()
+                .and_then(|browser| browser.profile.as_deref())
+                .or(config.browser.default_profile.as_deref())?;
+            (selected == profile_name).then(|| agent_id.clone())
+        })
+        .collect::<Vec<_>>();
+    agents.sort();
+    agents
+}
+
+fn normalize_view_path(view_path: &str) -> String {
+    let trimmed = view_path.trim();
+    if trimmed == "/" {
+        "/".to_string()
+    } else {
+        trimmed.trim_end_matches('/').to_string()
+    }
+}
+
+fn browser_viewer_url(headers: &HeaderMap, kasm_port: u16) -> String {
+    let host = forwarded_header_value(headers, "x-forwarded-host")
+        .or_else(|| forwarded_header_value(headers, "host"))
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let proto =
+        forwarded_header_value(headers, "x-forwarded-proto").unwrap_or_else(|| "http".to_string());
+    let host = host.split(',').next().unwrap_or("127.0.0.1").trim();
+    let host = host.split('@').next_back().unwrap_or("127.0.0.1");
+    let host_only = if host.starts_with('[') {
+        host.split("]:")
+            .next()
+            .map(|value| format!("{value}]"))
+            .unwrap_or_else(|| host.to_string())
+    } else {
+        host.split(':').next().unwrap_or(host).to_string()
+    };
+    format!("{proto}://{host_only}:{kasm_port}/")
+}
+
+fn forwarded_header_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+async fn is_port_listening(port: u16) -> bool {
+    timeout(
+        Duration::from_millis(250),
+        TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok())
+}
+
 fn validate_team_config(config: &RuntimeConfig, team: &TeamConfig) -> Result<()> {
     if team.name.trim().is_empty() {
         bail!("team.name must not be empty");
@@ -1389,9 +1507,7 @@ async fn api_doctor(State(state): State<AppState>) -> ApiResult<Json<Value>> {
                     .into(),
             );
         } else if codex_auth.token_expired {
-            warnings.push(
-                "Codex auth token expired. Run 'clawpod auth openai' to refresh.".into(),
-            );
+            warnings.push("Codex auth token expired. Run 'clawpod auth openai' to refresh.".into());
         }
     }
 
@@ -1428,3 +1544,39 @@ async fn command_version_check(program: &str, args: &[&str]) -> Option<String> {
 }
 
 const OFFICE_HTML: &str = include_str!("office.html");
+
+#[cfg(test)]
+mod tests {
+    use super::{browser_viewer_url, normalize_view_path};
+    use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn normalize_view_path_strips_trailing_slash() {
+        assert_eq!(normalize_view_path("/view/default/"), "/view/default");
+        assert_eq!(normalize_view_path("/view/default"), "/view/default");
+    }
+
+    #[test]
+    fn browser_viewer_url_prefers_forwarded_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("tailnet.example.ts.net"),
+        );
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        headers.insert("host", HeaderValue::from_static("127.0.0.1:3777"));
+
+        assert_eq!(
+            browser_viewer_url(&headers, 8441),
+            "https://tailnet.example.ts.net:8441/"
+        );
+    }
+
+    #[test]
+    fn browser_viewer_url_replaces_host_port() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("localhost:3777"));
+
+        assert_eq!(browser_viewer_url(&headers, 8442), "http://localhost:8442/");
+    }
+}

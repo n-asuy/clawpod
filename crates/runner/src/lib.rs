@@ -42,7 +42,7 @@ impl Runner for CliRunner {
         }
 
         let provider = request.provider;
-        let (program, args, envs) = match request.provider {
+        let (program, args, mut envs) = match request.provider {
             ProviderKind::Anthropic => {
                 let (program, args) = build_claude_command(&request);
                 (program, args, vec![])
@@ -58,6 +58,7 @@ impl Runner for CliRunner {
             ProviderKind::Custom => build_custom_command(&request)?,
             ProviderKind::Mock => unreachable!("mock handled above"),
         };
+        envs.extend(build_execution_envs(&request));
 
         // Use std::process (blocking) via spawn_blocking to avoid Tokio's
         // async Child::wait() and edge-triggered pipe EOF issues. Piped
@@ -66,10 +67,10 @@ impl Runner for CliRunner {
         let working_directory = request.working_directory.clone();
         let program_name = program.clone();
 
-        let is_codex = matches!(provider, ProviderKind::Openai)
-            || is_openai_harness(&request.metadata);
-        let is_claude = matches!(provider, ProviderKind::Anthropic)
-            || is_anthropic_harness(&request.metadata);
+        let is_codex =
+            matches!(provider, ProviderKind::Openai) || is_openai_harness(&request.metadata);
+        let is_claude =
+            matches!(provider, ProviderKind::Anthropic) || is_anthropic_harness(&request.metadata);
         let request_metadata = request.metadata.clone();
 
         let run_id_clone = run_id.clone();
@@ -163,6 +164,30 @@ fn is_openai_harness(metadata: &std::collections::HashMap<String, String>) -> bo
         .is_some_and(|h| h == "openai")
 }
 
+fn build_execution_envs(request: &RunRequest) -> Vec<(String, String)> {
+    let mut envs = vec![];
+    if let Some(display) = request.metadata.get("browser_display") {
+        envs.push(("DISPLAY".to_string(), display.clone()));
+        envs.push(("AGENT_BROWSER_DISPLAY".to_string(), display.clone()));
+    }
+    if let Some(profile) = request.metadata.get("browser_profile") {
+        envs.push(("AGENT_BROWSER_PROFILE".to_string(), profile.clone()));
+    }
+    if let Some(cdp_port) = request.metadata.get("browser_cdp_port") {
+        envs.push(("AGENT_BROWSER_CDP_PORT".to_string(), cdp_port.clone()));
+    }
+    if let Some(profile_dir) = request.metadata.get("browser_profile_dir") {
+        envs.push(("AGENT_BROWSER_PROFILE_DIR".to_string(), profile_dir.clone()));
+    }
+    if let Some(kasm_port) = request.metadata.get("browser_kasm_port") {
+        envs.push(("AGENT_BROWSER_KASM_PORT".to_string(), kasm_port.clone()));
+    }
+    if let Some(view_path) = request.metadata.get("browser_view_path") {
+        envs.push(("AGENT_BROWSER_VIEW_PATH".to_string(), view_path.clone()));
+    }
+    envs
+}
+
 // ---------------------------------------------------------------------------
 // Codex JSONL event parsing
 // ---------------------------------------------------------------------------
@@ -180,7 +205,10 @@ fn parse_codex_jsonl_event(line: &str, run_id: &str, seq: u32) -> Option<RunEven
         // Tool call initiated
         "item.created" => {
             let item = value.get("item")?;
-            let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+            let item_type = item
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
 
             match item_type {
                 "function_call" => {
@@ -223,7 +251,10 @@ fn parse_codex_jsonl_event(line: &str, run_id: &str, seq: u32) -> Option<RunEven
         // Tool call or agent message completed
         "item.completed" => {
             let item = value.get("item")?;
-            let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+            let item_type = item
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
 
             match item_type {
                 "function_call" => {
@@ -369,7 +400,10 @@ fn parse_claude_stream_event(line: &str, run_id: &str, seq: u32) -> Option<RunEv
             let message = value.get("message")?;
             let content = message.get("content").and_then(|c| c.as_array())?;
             let block = content.last()?;
-            let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+            let block_type = block
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
 
             match block_type {
                 "thinking" => {
@@ -390,10 +424,7 @@ fn parse_claude_stream_event(line: &str, run_id: &str, seq: u32) -> Option<RunEv
                         .get("name")
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown");
-                    let tool_id = block
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default();
+                    let tool_id = block.get("id").and_then(|v| v.as_str()).unwrap_or_default();
                     let input = block.get("input");
                     Some(RunEvent {
                         run_id: run_id.to_string(),
@@ -431,7 +462,10 @@ fn parse_claude_stream_event(line: &str, run_id: &str, seq: u32) -> Option<RunEv
             let message = value.get("message")?;
             let content = message.get("content").and_then(|c| c.as_array())?;
             let block = content.last()?;
-            let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+            let block_type = block
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
 
             if block_type == "tool_result" {
                 let tool_id = block
@@ -702,7 +736,8 @@ mod tests {
 
     #[test]
     fn parse_codex_agent_message_completed() {
-        let line = r#"{"type":"item.completed","item":{"type":"agent_message","text":"Hello world"}}"#;
+        let line =
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"Hello world"}}"#;
         let event = parse_codex_jsonl_event(line, "run-1", 1).unwrap();
         assert_eq!(event.event_type, RunEventType::AgentMessage);
         assert_eq!(event.data["text"], "Hello world");
@@ -711,8 +746,7 @@ mod tests {
 
     #[test]
     fn parse_codex_function_call_created() {
-        let line =
-            r#"{"type":"item.created","item":{"type":"function_call","name":"shell","call_id":"c1"}}"#;
+        let line = r#"{"type":"item.created","item":{"type":"function_call","name":"shell","call_id":"c1"}}"#;
         let event = parse_codex_jsonl_event(line, "run-1", 1).unwrap();
         assert_eq!(event.event_type, RunEventType::ToolCall);
         assert_eq!(event.data["name"], "shell");
@@ -784,7 +818,10 @@ mod tests {
         let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think about this...","signature":"sig"}]}}"#;
         let event = parse_claude_stream_event(line, "run-1", 1).unwrap();
         assert_eq!(event.event_type, RunEventType::Thinking);
-        assert!(event.data["text"].as_str().unwrap().contains("Let me think"));
+        assert!(event.data["text"]
+            .as_str()
+            .unwrap()
+            .contains("Let me think"));
     }
 
     #[test]
@@ -802,7 +839,10 @@ mod tests {
         let event = parse_claude_stream_event(line, "run-1", 3).unwrap();
         assert_eq!(event.event_type, RunEventType::ToolResult);
         assert_eq!(event.data["call_id"], "toolu_123");
-        assert!(event.data["output"].as_str().unwrap().contains("file contents"));
+        assert!(event.data["output"]
+            .as_str()
+            .unwrap()
+            .contains("file contents"));
     }
 
     #[test]
@@ -828,6 +868,65 @@ mod tests {
         assert_eq!(
             extract_claude_result_text(jsonl),
             Some("final text".to_string())
+        );
+    }
+
+    #[test]
+    fn build_execution_envs_includes_browser_context() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("browser_profile".to_string(), "reviewer".to_string());
+        metadata.insert("browser_cdp_port".to_string(), "9411".to_string());
+        metadata.insert(
+            "browser_profile_dir".to_string(),
+            "/tmp/reviewer-profile".to_string(),
+        );
+        metadata.insert("browser_display".to_string(), ":12".to_string());
+        metadata.insert("browser_kasm_port".to_string(), "8442".to_string());
+        metadata.insert(
+            "browser_view_path".to_string(),
+            "/view/reviewer".to_string(),
+        );
+
+        let request = RunRequest {
+            run_id: "00000000-0000-0000-0000-000000000001".parse().unwrap(),
+            task_id: "00000000-0000-0000-0000-000000000002".parse().unwrap(),
+            session_key: "session".to_string(),
+            agent_id: "reviewer".to_string(),
+            provider: ProviderKind::Mock,
+            model: "mock".to_string(),
+            think_level: domain::ThinkLevel::Low,
+            working_directory: ".".to_string(),
+            prompt: "hello".to_string(),
+            continue_session: false,
+            metadata,
+        };
+
+        let envs = build_execution_envs(&request);
+        let env_map: std::collections::HashMap<_, _> = envs.into_iter().collect();
+        assert_eq!(env_map.get("DISPLAY").map(String::as_str), Some(":12"));
+        assert_eq!(
+            env_map.get("AGENT_BROWSER_DISPLAY").map(String::as_str),
+            Some(":12")
+        );
+        assert_eq!(
+            env_map.get("AGENT_BROWSER_PROFILE").map(String::as_str),
+            Some("reviewer")
+        );
+        assert_eq!(
+            env_map.get("AGENT_BROWSER_CDP_PORT").map(String::as_str),
+            Some("9411")
+        );
+        assert_eq!(
+            env_map.get("AGENT_BROWSER_PROFILE_DIR").map(String::as_str),
+            Some("/tmp/reviewer-profile")
+        );
+        assert_eq!(
+            env_map.get("AGENT_BROWSER_KASM_PORT").map(String::as_str),
+            Some("8442")
+        );
+        assert_eq!(
+            env_map.get("AGENT_BROWSER_VIEW_PATH").map(String::as_str),
+            Some("/view/reviewer")
         );
     }
 }

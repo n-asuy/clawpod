@@ -91,7 +91,13 @@ pub async fn run(config: RuntimeConfig) -> Result<()> {
     let outgoing_diagnostics = diagnostics.clone();
     tokio::spawn(async move {
         mark_component_ok("slack_outgoing");
-        outgoing_loop(outgoing_config, outgoing_client, outgoing_token, outgoing_diagnostics).await;
+        outgoing_loop(
+            outgoing_config,
+            outgoing_client,
+            outgoing_token,
+            outgoing_diagnostics,
+        )
+        .await;
     });
 
     match config.slack_app_token()? {
@@ -569,7 +575,14 @@ async fn handle_message_event(
         .as_ref()
         .ok_or_else(|| anyhow!("slack sender access requires state store"))?;
     let access_state = store.is_sender_approved("slack", user_id)?;
-    match evaluate_ingress_policy(&access, chat_type, user_id, mentions_bot, access_state, Some(channel_id)) {
+    match evaluate_ingress_policy(
+        &access,
+        chat_type,
+        user_id,
+        mentions_bot,
+        access_state,
+        Some(channel_id),
+    ) {
         IngressDecision::Allow => {}
         IngressDecision::Drop { reason } => {
             diagnostics.emit(
@@ -768,7 +781,10 @@ async fn outgoing_loop(
             Ok(msgs) => msgs,
             Err(err) => {
                 error!("slack outgoing scan failed: {err:#}");
-                sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(500))).await;
+                sleep(Duration::from_millis(
+                    config.daemon.poll_interval_ms.max(500),
+                ))
+                .await;
                 continue;
             }
         };
@@ -812,7 +828,10 @@ async fn outgoing_loop(
             }
         }
 
-        sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(500))).await;
+        sleep(Duration::from_millis(
+            config.daemon.poll_interval_ms.max(500),
+        ))
+        .await;
     }
 }
 

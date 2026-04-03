@@ -218,8 +218,13 @@ fn selective_link_dir(
         })?;
     }
 
-    fs::create_dir_all(&session_target)
-        .with_context(|| format!("failed to create {} dir: {}", dir_name, session_target.display()))?;
+    fs::create_dir_all(&session_target).with_context(|| {
+        format!(
+            "failed to create {} dir: {}",
+            dir_name,
+            session_target.display()
+        )
+    })?;
 
     for &sub in shared_subdirs {
         let src = agent_root.join(dir_name).join(sub);
@@ -324,7 +329,11 @@ fn link_or_copy(src: PathBuf, dst: PathBuf) -> Result<()> {
         if let Err(err) = unix_fs::symlink(&link_target, &dst) {
             if err.kind() != std::io::ErrorKind::AlreadyExists {
                 return Err(err).with_context(|| {
-                    format!("failed to symlink {} -> {}", dst.display(), link_target.display())
+                    format!(
+                        "failed to symlink {} -> {}",
+                        dst.display(),
+                        link_target.display()
+                    )
                 });
             }
         }
@@ -410,10 +419,7 @@ mod tests {
     fn relative_path_parent() {
         let base = Path::new("/a/b/sessions/key");
         let target = Path::new("/a/b/memory");
-        assert_eq!(
-            relative_path(base, target),
-            PathBuf::from("../../memory")
-        );
+        assert_eq!(relative_path(base, target), PathBuf::from("../../memory"));
     }
 
     #[test]
@@ -427,10 +433,7 @@ mod tests {
     fn relative_path_deeply_nested() {
         let base = Path::new("/a/b/c/d");
         let target = Path::new("/a/x/y");
-        assert_eq!(
-            relative_path(base, target),
-            PathBuf::from("../../../x/y")
-        );
+        assert_eq!(relative_path(base, target), PathBuf::from("../../../x/y"));
     }
 
     #[cfg(unix)]
@@ -450,6 +453,7 @@ mod tests {
                 system_prompt: None,
                 prompt_file: None,
                 heartbeat: None,
+                browser: None,
             },
         );
         let teams = HashMap::new();
@@ -549,6 +553,7 @@ mod tests {
                 system_prompt: None,
                 prompt_file: None,
                 heartbeat: None,
+                browser: None,
             },
         );
         let teams = HashMap::new();

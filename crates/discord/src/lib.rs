@@ -12,7 +12,7 @@ use queue::{
 };
 use serenity::all::{
     ChannelId, ChannelType, CreateAllowedMentions, CreateAttachment, CreateMessage, GatewayIntents,
-    Http, Message, MessageId, Ready, ReactionType,
+    Http, Message, MessageId, ReactionType, Ready,
 };
 use serenity::async_trait;
 use serenity::client::{Client, Context, EventHandler};
@@ -121,9 +121,15 @@ impl EventHandler for Handler {
     }
 
     async fn message(&self, ctx: Context, message: Message) {
-        if let Err(err) =
-            handle_message(&ctx, &self.config, &self.channel, &self.store, &self.live, message)
-                .await
+        if let Err(err) = handle_message(
+            &ctx,
+            &self.config,
+            &self.channel,
+            &self.store,
+            &self.live,
+            message,
+        )
+        .await
         {
             error!("discord inbound handling failed: {err:#}");
         }
@@ -161,7 +167,14 @@ async fn handle_message(
     let sender_id = message.author.id.to_string();
     let access_state = store.is_sender_approved("discord", &sender_id)?;
     let channel_id_str = message.channel_id.to_string();
-    match evaluate_ingress_policy(&access, chat_type, &sender_id, mentions_bot, access_state, Some(&channel_id_str)) {
+    match evaluate_ingress_policy(
+        &access,
+        chat_type,
+        &sender_id,
+        mentions_bot,
+        access_state,
+        Some(&channel_id_str),
+    ) {
         IngressDecision::Allow => {}
         IngressDecision::Drop { .. } => return Ok(()),
         IngressDecision::RequirePairing => {
@@ -336,7 +349,10 @@ async fn outgoing_loop(config: RuntimeConfig, http: Arc<Http>, live: Arc<Discord
             Ok(msgs) => msgs,
             Err(err) => {
                 error!("discord outgoing scan failed: {err:#}");
-                sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(300))).await;
+                sleep(Duration::from_millis(
+                    config.daemon.poll_interval_ms.max(300),
+                ))
+                .await;
                 continue;
             }
         };
@@ -362,7 +378,10 @@ async fn outgoing_loop(config: RuntimeConfig, http: Arc<Http>, live: Arc<Discord
             }
         }
 
-        sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(300))).await;
+        sleep(Duration::from_millis(
+            config.daemon.poll_interval_ms.max(300),
+        ))
+        .await;
     }
 }
 
@@ -414,11 +433,9 @@ async fn send_outgoing(http: &Http, message: &queue::QueuedOutgoingMessage) -> R
                     continue;
                 }
                 attachments.push(
-                    CreateAttachment::path(&path)
-                        .await
-                        .with_context(|| {
-                            format!("failed to read attachment: {}", path.display())
-                        })?,
+                    CreateAttachment::path(&path).await.with_context(|| {
+                        format!("failed to read attachment: {}", path.display())
+                    })?,
                 );
             }
             if !attachments.is_empty() {
@@ -634,8 +651,8 @@ fn parse_discord_message_id(raw: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        find_open_fence, is_permanent_send_error, normalize_discord_text,
-        parse_discord_message_id, split_at_boundaries, split_message_chunks,
+        find_open_fence, is_permanent_send_error, normalize_discord_text, parse_discord_message_id,
+        split_at_boundaries, split_message_chunks,
     };
 
     #[test]

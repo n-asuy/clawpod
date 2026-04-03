@@ -1053,9 +1053,14 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
 
   /* Agents */
   async function renderAgents(el) {
-    const data = await GET('/api/agents');
+    const [data, browserData] = await Promise.all([
+      GET('/api/agents'),
+      GET('/api/browser/profiles'),
+    ]);
     const agents = data.agents || {};
     const entries = Object.entries(agents);
+    const defaultBrowserProfile = browserData.default_profile || '';
+    const browserProfiles = Object.fromEntries((browserData.profiles || []).map(p => [p.name, p]));
 
     $('#header-actions').innerHTML = '<button class="btn btn-primary btn-sm" onclick="showCreateAgentModal()">+ Add Agent</button>';
 
@@ -1065,7 +1070,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
     }
 
     el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
-      <thead><tr><th>ID</th><th>Name</th><th>Provider</th><th>Model</th><th>Think</th><th></th></tr></thead>
+      <thead><tr><th>ID</th><th>Name</th><th>Provider</th><th>Model</th><th>Think</th><th>Browser Profile</th><th></th></tr></thead>
       <tbody>
         ${entries.map(([id, a]) => `<tr>
           <td class="mono">${escapeHtml(id)}</td>
@@ -1073,8 +1078,20 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
           <td><span class="badge badge-blue">${escapeHtml(a.provider || '')}</span></td>
           <td class="mono text-dim">${escapeHtml(a.model)}</td>
           <td class="mono text-dim">${escapeHtml(a.think_level || 'default')}</td>
+          <td>${(() => {
+            const profileName = (a.browser && a.browser.profile) || defaultBrowserProfile || '';
+            if (!profileName) return '<span class="text-dim">-</span>';
+            const profile = browserProfiles[profileName];
+            const status = profile ? (profile.kasm_listening ? '<span class="badge badge-green">viewer up</span>' : '<span class="badge badge-gray">viewer down</span>') : '<span class="badge badge-gray">unresolved</span>';
+            return `<div class="mono text-dim">${escapeHtml(profileName)}</div><div style="margin-top:4px">${status}</div>`;
+          })()}</td>
           <td>
             <div class="btn-group">
+              ${(() => {
+                const profileName = (a.browser && a.browser.profile) || defaultBrowserProfile || '';
+                const profile = profileName ? browserProfiles[profileName] : null;
+                return profile ? `<a class="btn btn-sm" href="${escapeHtml(profile.view_path)}" target="_blank" rel="noopener">Viewer</a>` : '';
+              })()}
               <button class="btn btn-sm" onclick="showAgentFiles('${escapeHtml(id)}')">Files</button>
               <button class="btn btn-sm" onclick="showEditAgentModal('${escapeHtml(id)}')">Edit</button>
               <button class="btn btn-danger btn-sm" onclick="deleteAgent('${escapeHtml(id)}')">Delete</button>
@@ -1107,9 +1124,17 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
           <option value="adaptive">Adaptive</option>
         </select>
       </div>
+      <div class="form-row"><label class="form-label">Browser Profile</label><input class="form-input" id="m-agent-browser-profile" placeholder="optional; falls back to browser.default_profile"></div>
     `, '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitCreateAgent()">Create</button>');
     setupModelProviderBinding('');
   };
+
+  function applyAgentBrowserProfile(agent) {
+    const browserProfile = $('#m-agent-browser-profile').value.trim();
+    if (browserProfile) {
+      agent.browser = { profile: browserProfile };
+    }
+  }
 
   window.submitCreateAgent = async function() {
     try {
@@ -1120,6 +1145,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
       };
       const thinkLevel = $('#m-agent-think-level').value;
       if (thinkLevel) agent.think_level = thinkLevel;
+      applyAgentBrowserProfile(agent);
       await POST('/api/agents', { id: $('#m-agent-id').value, agent });
       closeModal();
       toast('Agent created — restart runtime for full effect', 'success');
@@ -1146,6 +1172,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
             ${['','off','minimal','low','medium','high','xhigh','adaptive'].map(v => `<option value="${v}" ${v===(a.think_level||'')?'selected':''}>${v || 'Default'}</option>`).join('')}
           </select>
         </div>
+        <div class="form-row"><label class="form-label">Browser Profile</label><input class="form-input" id="m-agent-browser-profile" value="${escapeHtml((a.browser && a.browser.profile) || '')}" placeholder="optional; falls back to browser.default_profile"></div>
       `, `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitEditAgent('${escapeHtml(id)}')">Save</button>`);
       setupModelProviderBinding(a.model || '');
     } catch (err) { toast(err.message, 'error'); }
@@ -1160,6 +1187,7 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
       };
       const thinkLevel = $('#m-agent-think-level').value;
       if (thinkLevel) agent.think_level = thinkLevel;
+      applyAgentBrowserProfile(agent);
       await PUT(`/api/agents/${id}`, { agent });
       closeModal();
       toast('Agent updated — restart runtime for full effect', 'success');

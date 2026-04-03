@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use config::parse_duration_str;
-use domain::{AgentHeartbeatConfig, HeartbeatDirectPolicy, HeartbeatTarget, ActiveHoursConfig};
+use domain::{ActiveHoursConfig, AgentHeartbeatConfig, HeartbeatDirectPolicy, HeartbeatTarget};
 
 /// Default heartbeat prompt used when no explicit override is configured.
 pub const DEFAULT_HEARTBEAT_PROMPT: &str = "\
@@ -123,7 +123,10 @@ mod tests {
         assert_eq!(policy.ack_max_chars, 300);
         assert_eq!(policy.direct_policy, HeartbeatDirectPolicy::Allow);
         assert!(!policy.light_context);
-        assert!(policy.isolated_session, "isolated_session defaults to true to avoid main session context pollution");
+        assert!(
+            policy.isolated_session,
+            "isolated_session defaults to true to avoid main session context pollution"
+        );
         assert!(policy.prompt.contains("HEARTBEAT_OK"));
     }
 

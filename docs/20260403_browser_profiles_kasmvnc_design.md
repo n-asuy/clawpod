@@ -1,6 +1,25 @@
 # Per-Profile Browser + KasmVNC Design
 
-Status: draft
+Status: implemented in config/runtime/office; deployment rollout still required
+
+## Implementation Status
+
+Implemented in the repo:
+
+- top-level `browser.profiles`
+- `agents.<id>.browser.profile`
+- validation for unique `cdp_port`, `display`, `kasm_port`, and `view_path`
+- per-run browser metadata injection
+- runner env injection for `DISPLAY` and `AGENT_BROWSER_*`
+- Office visibility for browser profiles and viewer entry links
+- stable viewer entry paths that redirect to the configured KasmVNC port
+- Linux user-service generation for one KasmVNC unit per browser profile
+
+Still operational, not automatic:
+
+- installing KasmVNC itself on the host
+- exposing each `kasm_port` through Tailscale Serve or another reverse proxy
+- optional stronger isolation via `os_user` / `home_dir`
 
 ## Goal
 
@@ -438,4 +457,3 @@ This is the smallest design that:
 - fixes browser-state ambiguity
 - fixes visual-session contention
 - leaves room for future credential and host isolation
-

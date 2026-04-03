@@ -674,7 +674,11 @@ impl StateStore {
     pub fn get_session(&self, session_key: &str) -> Result<Option<SessionSummary>> {
         let mut snapshot = self.lock_snapshot()?;
         self.refresh_locked(&mut snapshot)?;
-        Ok(snapshot.sessions.get(session_key).cloned().map(session_to_summary))
+        Ok(snapshot
+            .sessions
+            .get(session_key)
+            .cloned()
+            .map(session_to_summary))
     }
 
     pub fn clear_agent_sessions(&self, agent_id: &str) -> Result<()> {
@@ -1429,11 +1433,7 @@ mod tests {
             .touch_session("agent:default:main", "default")
             .expect("touch");
         store
-            .update_session_heartbeat(
-                "agent:default:main",
-                "HEARTBEAT_OK",
-                "2026-01-01T00:00:00Z",
-            )
+            .update_session_heartbeat("agent:default:main", "HEARTBEAT_OK", "2026-01-01T00:00:00Z")
             .expect("update");
 
         let session = store

@@ -218,6 +218,12 @@ pub struct ChannelHeartbeatConfig {
     pub use_indicator: Option<bool>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentBrowserConfig {
+    #[serde(default)]
+    pub profile: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub name: String,
@@ -234,6 +240,8 @@ pub struct AgentConfig {
     pub prompt_file: Option<String>,
     #[serde(default)]
     pub heartbeat: Option<AgentHeartbeatConfig>,
+    #[serde(default)]
+    pub browser: Option<AgentBrowserConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

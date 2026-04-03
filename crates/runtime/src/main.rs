@@ -21,9 +21,10 @@ use queue::{enqueue_message, EnqueueMessage, QueueProcessor};
 use runner::CliRunner;
 use serde_json::Value;
 use store::StateStore;
+use tokio::net::TcpStream;
 use tokio::process::Command;
 use tokio::task::JoinSet;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration};
 use tracing::info;
 
 #[derive(Debug, Parser)]
@@ -534,8 +535,14 @@ fn agent_list(config: &RuntimeConfig) -> Result<()> {
             .think_level
             .map(|t| think_level_label(&t))
             .unwrap_or("-");
+        let browser_profile = agent
+            .browser
+            .as_ref()
+            .and_then(|browser| browser.profile.as_deref())
+            .or(config.browser.default_profile.as_deref())
+            .unwrap_or("-");
         println!(
-            "  @{id}  {name}  {provider}/{model}  think={think}",
+            "  @{id}  {name}  {provider}/{model}  think={think}  browser={browser_profile}",
             name = agent.name,
             model = agent.model,
         );
@@ -569,6 +576,7 @@ fn agent_add(
         system_prompt: system_prompt.map(String::from),
         prompt_file: None,
         heartbeat: None,
+        browser: None,
     };
 
     if agent_config.name.trim().is_empty() {
@@ -593,7 +601,11 @@ fn agent_add(
         eprintln!("warning: failed to bootstrap workspace: {e:#}");
     }
 
-    println!("agent '{id}' created ({}/{})", provider_label(&agent_config.provider), agent_config.model);
+    println!(
+        "agent '{id}' created ({}/{})",
+        provider_label(&agent_config.provider),
+        agent_config.model
+    );
     Ok(())
 }
 
@@ -605,9 +617,11 @@ fn agent_remove(config: &RuntimeConfig, config_path: &Path, id: &str) -> Result<
     if config.agents.len() <= 1 {
         bail!("cannot remove the last agent");
     }
-    if let Some((team_id, _)) = config.teams.iter().find(|(_, team)| {
-        team.leader_agent == id || team.agents.iter().any(|a| a == &id)
-    }) {
+    if let Some((team_id, _)) = config
+        .teams
+        .iter()
+        .find(|(_, team)| team.leader_agent == id || team.agents.iter().any(|a| a == &id))
+    {
         bail!("agent {id} is still referenced by team {team_id}");
     }
 
@@ -625,7 +639,10 @@ fn agent_remove(config: &RuntimeConfig, config_path: &Path, id: &str) -> Result<
 fn agent_show(config: &RuntimeConfig, id: &str) -> Result<()> {
     let agent = config.agents.get(id).ok_or_else(|| {
         let available: Vec<&str> = config.agents.keys().map(|s| s.as_str()).collect();
-        anyhow!("agent not found: {id} (available: {})", available.join(", "))
+        anyhow!(
+            "agent not found: {id} (available: {})",
+            available.join(", ")
+        )
     })?;
     println!("{}", serde_json::to_string_pretty(agent)?);
     Ok(())
@@ -762,6 +779,27 @@ async fn doctor(config: &RuntimeConfig) -> Result<()> {
         public_bind = config.server.is_public_bind(),
         "server configuration"
     );
+
+    let browser_profiles = config.resolved_browser_profiles()?;
+    if browser_profiles.is_empty() {
+        info!("browser profiles: none configured");
+    } else {
+        for profile in browser_profiles {
+            let kasm_listening = is_port_listening(profile.kasm_port).await;
+            let cdp_listening = is_port_listening(profile.cdp_port).await;
+            info!(
+                profile = %profile.name,
+                display = %profile.display,
+                cdp_port = profile.cdp_port,
+                cdp_listening,
+                kasm_port = profile.kasm_port,
+                kasm_listening,
+                view_path = %profile.view_path,
+                profile_dir = %profile.profile_dir.display(),
+                "browser profile"
+            );
+        }
+    }
 
     let claude = command_version("claude", ["--version"]).await;
     let codex = command_version("codex", ["--version"]).await;
@@ -1052,6 +1090,26 @@ async fn status(config: &RuntimeConfig, config_path: &Path) -> Result<()> {
     println!("stdout_log: {}", config.daemon_log_path().display());
     println!("stderr_log: {}", config.daemon_stderr_path().display());
     println!("event_log: {}", config.event_log_path().display());
+    let browser_profiles = config.resolved_browser_profiles()?;
+    if browser_profiles.is_empty() {
+        println!("browser_profiles: none");
+    } else {
+        println!("browser_profiles:");
+        for profile in browser_profiles {
+            let kasm_listening = is_port_listening(profile.kasm_port).await;
+            let cdp_listening = is_port_listening(profile.cdp_port).await;
+            println!(
+                "  - {name} display={display} cdp={cdp_port}({cdp_status}) kasm={kasm_port}({kasm_status}) view={view}",
+                name = profile.name,
+                display = profile.display,
+                cdp_port = profile.cdp_port,
+                cdp_status = if cdp_listening { "listening" } else { "down" },
+                kasm_port = profile.kasm_port,
+                kasm_status = if kasm_listening { "listening" } else { "down" },
+                view = profile.view_path,
+            );
+        }
+    }
 
     match health {
         Some(Ok(snapshot)) => {
@@ -1084,6 +1142,15 @@ async fn health(config: &RuntimeConfig) -> Result<()> {
     let snapshot = fetch_health(config).await?;
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
     Ok(())
+}
+
+async fn is_port_listening(port: u16) -> bool {
+    timeout(
+        Duration::from_millis(300),
+        TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await
+    .is_ok_and(|result| result.is_ok())
 }
 
 async fn fetch_health(config: &RuntimeConfig) -> Result<Value> {

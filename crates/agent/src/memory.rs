@@ -79,7 +79,9 @@ fn extract_body_after_frontmatter(content: &str) -> &str {
     if !trimmed.starts_with("---") {
         return content.trim();
     }
-    let rest = match trimmed[3..].strip_prefix('\n').or_else(|| trimmed[3..].strip_prefix("\r\n"))
+    let rest = match trimmed[3..]
+        .strip_prefix('\n')
+        .or_else(|| trimmed[3..].strip_prefix("\r\n"))
     {
         Some(r) => r,
         None => return content.trim(),
@@ -235,7 +237,13 @@ fn total_body_chars(folder: &MemoryFolder) -> usize {
     let own: usize = folder
         .entries
         .iter()
-        .map(|e| if e.body.is_empty() { e.summary.len() } else { e.body.len() })
+        .map(|e| {
+            if e.body.is_empty() {
+                e.summary.len()
+            } else {
+                e.body.len()
+            }
+        })
         .sum();
     let sub: usize = folder.subfolders.iter().map(total_body_chars).sum();
     own + sub
@@ -471,10 +479,7 @@ mod tests {
         make_memory_file(
             dir.path(),
             "big.md",
-            &format!(
-                "---\nname: big\nsummary: Huge memory\n---\n{}",
-                large_body
-            ),
+            &format!("---\nname: big\nsummary: Huge memory\n---\n{}", large_body),
         );
 
         let (content, is_inline) = load_memory_content(dir.path());
@@ -641,10 +646,7 @@ mod tests {
         make_memory_file(
             dir.path(),
             "big.md",
-            &format!(
-                "---\nname: big\nsummary: Huge memory\n---\n{}",
-                large_body
-            ),
+            &format!("---\nname: big\nsummary: Huge memory\n---\n{}", large_body),
         );
 
         let agents = HashMap::new();

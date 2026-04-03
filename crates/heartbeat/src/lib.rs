@@ -770,7 +770,6 @@ fn parse_heartbeat_target(s: &str) -> Option<HeartbeatTarget> {
     }
 }
 
-
 fn truncate_preview(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         text.to_string()
@@ -925,6 +924,7 @@ mod tests {
             system_prompt: None,
             prompt_file: None,
             heartbeat: None,
+            browser: None,
         }
     }
 

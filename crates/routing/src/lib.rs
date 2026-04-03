@@ -299,6 +299,7 @@ mod tests {
                     prompt_file: None,
                     think_level: None,
                     heartbeat: None,
+                    browser: None,
                 },
             ),
             (
@@ -312,6 +313,7 @@ mod tests {
                     prompt_file: None,
                     think_level: None,
                     heartbeat: None,
+                    browser: None,
                 },
             ),
         ])
@@ -409,6 +411,7 @@ mod tests {
                 prompt_file: None,
                 think_level: None,
                 heartbeat: None,
+                browser: None,
             },
         );
         let mut teams = sample_teams();
@@ -490,8 +493,7 @@ mod tests {
 
     #[test]
     fn strip_route_to_tags_removes_multiple() {
-        let result =
-            strip_route_to_tags("Hello [route_to: a] world [route_to: b]");
+        let result = strip_route_to_tags("Hello [route_to: a] world [route_to: b]");
         assert_eq!(result, "Hello world");
     }
 }

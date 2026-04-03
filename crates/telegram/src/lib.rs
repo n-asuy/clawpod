@@ -109,7 +109,14 @@ async fn handle_message(
         .unwrap_or_default();
     let access_state = store.is_sender_approved("telegram", &sender_id)?;
     let chat_id_str = message.chat.id.0.to_string();
-    match evaluate_ingress_policy(&access, chat_type, &sender_id, mentions_bot, access_state, Some(&chat_id_str)) {
+    match evaluate_ingress_policy(
+        &access,
+        chat_type,
+        &sender_id,
+        mentions_bot,
+        access_state,
+        Some(&chat_id_str),
+    ) {
         IngressDecision::Allow => {}
         IngressDecision::Drop { .. } => return Ok(()),
         IngressDecision::RequirePairing => {
@@ -265,7 +272,10 @@ async fn outgoing_loop(config: RuntimeConfig, bot: Bot) {
             Ok(msgs) => msgs,
             Err(err) => {
                 error!("telegram outgoing scan failed: {err:#}");
-                sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(300))).await;
+                sleep(Duration::from_millis(
+                    config.daemon.poll_interval_ms.max(300),
+                ))
+                .await;
                 continue;
             }
         };
@@ -285,7 +295,10 @@ async fn outgoing_loop(config: RuntimeConfig, bot: Bot) {
             }
         }
 
-        sleep(Duration::from_millis(config.daemon.poll_interval_ms.max(300))).await;
+        sleep(Duration::from_millis(
+            config.daemon.poll_interval_ms.max(300),
+        ))
+        .await;
     }
 }
 
