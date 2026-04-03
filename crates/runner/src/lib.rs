@@ -1,6 +1,6 @@
 mod browser;
 
-use std::time::Instant;
+use std::{path::PathBuf, time::Instant};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -168,6 +168,19 @@ fn is_openai_harness(metadata: &std::collections::HashMap<String, String>) -> bo
         .is_some_and(|h| h == "openai")
 }
 
+fn resolve_browser_home_dir(
+    metadata: &std::collections::HashMap<String, String>,
+) -> Option<PathBuf> {
+    metadata
+        .get("browser_home_dir")
+        .map(PathBuf::from)
+        .or_else(|| {
+            metadata
+                .get("browser_profile_dir")
+                .map(|profile_dir| PathBuf::from(profile_dir).join(".home"))
+        })
+}
+
 fn build_execution_envs(request: &RunRequest) -> Vec<(String, String)> {
     let mut envs = vec![];
     if let Some(display) = request.metadata.get("browser_display") {
@@ -189,8 +202,38 @@ fn build_execution_envs(request: &RunRequest) -> Vec<(String, String)> {
     if let Some(view_path) = request.metadata.get("browser_view_path") {
         envs.push(("AGENT_BROWSER_VIEW_PATH".to_string(), view_path.clone()));
     }
-    if let Some(home_dir) = request.metadata.get("browser_home_dir") {
+    if let Some(home_dir) = resolve_browser_home_dir(&request.metadata) {
+        let home_dir = home_dir.display().to_string();
         envs.push(("AGENT_BROWSER_HOME_DIR".to_string(), home_dir.clone()));
+        envs.push(("HOME".to_string(), home_dir.clone()));
+        envs.push((
+            "XDG_CONFIG_HOME".to_string(),
+            PathBuf::from(&home_dir)
+                .join(".config")
+                .display()
+                .to_string(),
+        ));
+        envs.push((
+            "XDG_CACHE_HOME".to_string(),
+            PathBuf::from(&home_dir)
+                .join(".cache")
+                .display()
+                .to_string(),
+        ));
+        envs.push((
+            "XDG_STATE_HOME".to_string(),
+            PathBuf::from(&home_dir)
+                .join(".local/state")
+                .display()
+                .to_string(),
+        ));
+        envs.push((
+            "XDG_DATA_HOME".to_string(),
+            PathBuf::from(&home_dir)
+                .join(".local/share")
+                .display()
+                .to_string(),
+        ));
     }
     envs
 }
@@ -942,6 +985,67 @@ mod tests {
         assert_eq!(
             env_map.get("AGENT_BROWSER_HOME_DIR").map(String::as_str),
             Some("/srv/clawpod/reviewer-home")
+        );
+        assert_eq!(
+            env_map.get("HOME").map(String::as_str),
+            Some("/srv/clawpod/reviewer-home")
+        );
+        assert_eq!(
+            env_map.get("XDG_CONFIG_HOME").map(String::as_str),
+            Some("/srv/clawpod/reviewer-home/.config")
+        );
+        assert_eq!(
+            env_map.get("XDG_CACHE_HOME").map(String::as_str),
+            Some("/srv/clawpod/reviewer-home/.cache")
+        );
+        assert_eq!(
+            env_map.get("XDG_STATE_HOME").map(String::as_str),
+            Some("/srv/clawpod/reviewer-home/.local/state")
+        );
+        assert_eq!(
+            env_map.get("XDG_DATA_HOME").map(String::as_str),
+            Some("/srv/clawpod/reviewer-home/.local/share")
+        );
+    }
+
+    #[test]
+    fn build_execution_envs_derives_browser_home_dir_from_profile_dir() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("browser_profile".to_string(), "leader".to_string());
+        metadata.insert("browser_cdp_port".to_string(), "9410".to_string());
+        metadata.insert(
+            "browser_profile_dir".to_string(),
+            "/tmp/leader-profile".to_string(),
+        );
+        metadata.insert("browser_display".to_string(), ":11".to_string());
+
+        let request = RunRequest {
+            run_id: "00000000-0000-0000-0000-000000000011".parse().unwrap(),
+            task_id: "00000000-0000-0000-0000-000000000012".parse().unwrap(),
+            session_key: "session".to_string(),
+            agent_id: "leader".to_string(),
+            provider: ProviderKind::Mock,
+            model: "mock".to_string(),
+            think_level: domain::ThinkLevel::Low,
+            working_directory: ".".to_string(),
+            prompt: "hello".to_string(),
+            continue_session: false,
+            metadata,
+        };
+
+        let envs = build_execution_envs(&request);
+        let env_map: std::collections::HashMap<_, _> = envs.into_iter().collect();
+        assert_eq!(
+            env_map.get("AGENT_BROWSER_HOME_DIR").map(String::as_str),
+            Some("/tmp/leader-profile/.home")
+        );
+        assert_eq!(
+            env_map.get("HOME").map(String::as_str),
+            Some("/tmp/leader-profile/.home")
+        );
+        assert_eq!(
+            env_map.get("XDG_CONFIG_HOME").map(String::as_str),
+            Some("/tmp/leader-profile/.home/.config")
         );
     }
 }

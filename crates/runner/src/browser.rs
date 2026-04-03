@@ -56,6 +56,17 @@ pub async fn ensure_browser_ready(metadata: &HashMap<String, String>) -> Result<
     Ok(())
 }
 
+fn resolve_browser_home_dir(metadata: &HashMap<String, String>) -> Option<PathBuf> {
+    metadata
+        .get("browser_home_dir")
+        .map(PathBuf::from)
+        .or_else(|| {
+            metadata
+                .get("browser_profile_dir")
+                .map(|profile_dir| PathBuf::from(profile_dir).join(".home"))
+        })
+}
+
 impl BrowserLaunchConfig {
     fn from_metadata(metadata: &HashMap<String, String>) -> Result<Option<Self>> {
         let Some(cdp_port_raw) = metadata.get("browser_cdp_port") else {
@@ -72,7 +83,7 @@ impl BrowserLaunchConfig {
             cdp_port,
             profile_dir: PathBuf::from(profile_dir),
             display: metadata.get("browser_display").cloned(),
-            home_dir: metadata.get("browser_home_dir").map(PathBuf::from),
+            home_dir: resolve_browser_home_dir(metadata),
             executable_path: resolve_browser_executable()?,
             open_url: std::env::var("AGENT_BROWSER_OPEN_URL")
                 .unwrap_or_else(|_| "about:blank".to_string()),
@@ -94,6 +105,21 @@ async fn launch_browser(config: &BrowserLaunchConfig) -> Result<()> {
     tokio::fs::create_dir_all(&config.profile_dir)
         .await
         .with_context(|| format!("failed to create {}", config.profile_dir.display()))?;
+    if let Some(home_dir) = &config.home_dir {
+        tokio::fs::create_dir_all(home_dir)
+            .await
+            .with_context(|| format!("failed to create {}", home_dir.display()))?;
+        for path in [
+            home_dir.join(".config"),
+            home_dir.join(".cache"),
+            home_dir.join(".local/state"),
+            home_dir.join(".local/share"),
+        ] {
+            tokio::fs::create_dir_all(&path)
+                .await
+                .with_context(|| format!("failed to create {}", path.display()))?;
+        }
+    }
 
     let mut command = Command::new(&config.executable_path);
     command
