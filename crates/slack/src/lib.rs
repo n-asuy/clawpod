@@ -13,7 +13,7 @@ use queue::{
     EnqueueMessage,
 };
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
 use store::{SenderAccessRegistration, StateStore, VerifyResult};
 use tokio::fs;
@@ -1133,7 +1133,7 @@ async fn upload_file_external(
         .ok_or_else(|| anyhow!("invalid attachment filename: {}", path.display()))?
         .to_string();
 
-    let upload: SlackEnvelope<SlackUploadUrl> = client
+    let upload_response = client
         .post("https://slack.com/api/files.getUploadURLExternal")
         .bearer_auth(bot_token)
         .form(&[
@@ -1142,11 +1142,19 @@ async fn upload_file_external(
         ])
         .send()
         .await
-        .context("failed to call files.getUploadURLExternal")?
-        .json()
+        .context("failed to call files.getUploadURLExternal")?;
+    let upload_status = upload_response.status();
+    let upload_body = upload_response
+        .text()
         .await
-        .context("failed to parse files.getUploadURLExternal response")?;
-    let upload = upload.into_result()?;
+        .context("failed to read files.getUploadURLExternal response body")?;
+    if !upload_status.is_success() {
+        return Err(anyhow!(
+            "slack files.getUploadURLExternal failed ({upload_status}): {upload_body}"
+        ));
+    }
+    let upload =
+        parse_slack_success_payload::<SlackUploadUrl>(&upload_body, "files.getUploadURLExternal")?;
 
     client
         .post(upload.upload_url)
@@ -1170,17 +1178,24 @@ async fn upload_file_external(
         form_fields.push(("thread_ts".to_string(), thread_ts.to_string()));
     }
 
-    let response: SlackEnvelope<Value> = client
+    let response = client
         .post("https://slack.com/api/files.completeUploadExternal")
         .bearer_auth(bot_token)
         .form(&form_fields)
         .send()
         .await
-        .context("failed to call files.completeUploadExternal")?
-        .json()
+        .context("failed to call files.completeUploadExternal")?;
+    let status = response.status();
+    let body = response
+        .text()
         .await
-        .context("failed to parse files.completeUploadExternal response")?;
-    response.into_result().map(|_| ())
+        .context("failed to read files.completeUploadExternal response body")?;
+    if !status.is_success() {
+        return Err(anyhow!(
+            "slack files.completeUploadExternal failed ({status}): {body}"
+        ));
+    }
+    parse_slack_success_payload::<Value>(&body, "files.completeUploadExternal").map(|_| ())
 }
 
 async fn post_slack_json(client: &Client, bot_token: &str, url: &str, body: Value) -> Result<()> {
@@ -1301,6 +1316,35 @@ impl<T> SlackEnvelope<T> {
     }
 }
 
+fn parse_slack_success_payload<T>(body: &str, context: &str) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let value: Value = serde_json::from_str(body)
+        .with_context(|| format!("failed to parse {context} response"))?;
+    if value.get("ok") == Some(&Value::Bool(false)) {
+        let error = value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown error");
+        let needed = value.get("needed").and_then(Value::as_str);
+        let provided = value.get("provided").and_then(Value::as_str);
+        let mut message = format!("slack api error: {error}");
+        if let Some(needed) = needed {
+            message.push_str(&format!(" (needed: {needed}"));
+            if let Some(provided) = provided {
+                message.push_str(&format!(", provided: {provided}"));
+            }
+            message.push(')');
+        }
+        return Err(anyhow!(message));
+    }
+
+    let envelope: SlackEnvelope<T> = serde_json::from_value(value)
+        .with_context(|| format!("failed to parse {context} response"))?;
+    envelope.into_result()
+}
+
 #[derive(Debug, Deserialize)]
 struct SlackSocketUrl {
     url: String,
@@ -1373,5 +1417,19 @@ mod tests {
         assert!(!deduper.should_drop("C123:1740000000.000100"));
         assert!(deduper.should_drop("C123:1740000000.000100"));
         assert!(!deduper.should_drop("C123:1740000000.000101"));
+    }
+
+    #[test]
+    fn parse_slack_success_payload_surfaces_api_error_before_payload_decode() {
+        let err = parse_slack_success_payload::<SlackUploadUrl>(
+            r#"{"ok":false,"error":"missing_scope","needed":"files:write","provided":"chat:write"}"#,
+            "files.getUploadURLExternal",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("missing_scope"));
+        assert!(err.contains("files:write"));
+        assert!(err.contains("chat:write"));
     }
 }
