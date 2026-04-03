@@ -192,13 +192,11 @@ fn resolve_browser_xauthority_from(
     xauthority_path: Option<PathBuf>,
     source_home_dir: Option<PathBuf>,
 ) -> Option<PathBuf> {
-    xauthority_path
-        .filter(|path| path.is_file())
-        .or_else(|| {
-            source_home_dir
-                .map(|home| home.join(".Xauthority"))
-                .filter(|path| path.is_file())
-        })
+    xauthority_path.filter(|path| path.is_file()).or_else(|| {
+        source_home_dir
+            .map(|home| home.join(".Xauthority"))
+            .filter(|path| path.is_file())
+    })
 }
 
 fn build_execution_envs(request: &RunRequest) -> Vec<(String, String)> {
@@ -228,35 +226,6 @@ fn build_execution_envs(request: &RunRequest) -> Vec<(String, String)> {
     if let Some(home_dir) = resolve_browser_home_dir(&request.metadata) {
         let home_dir = home_dir.display().to_string();
         envs.push(("AGENT_BROWSER_HOME_DIR".to_string(), home_dir.clone()));
-        envs.push(("HOME".to_string(), home_dir.clone()));
-        envs.push((
-            "XDG_CONFIG_HOME".to_string(),
-            PathBuf::from(&home_dir)
-                .join(".config")
-                .display()
-                .to_string(),
-        ));
-        envs.push((
-            "XDG_CACHE_HOME".to_string(),
-            PathBuf::from(&home_dir)
-                .join(".cache")
-                .display()
-                .to_string(),
-        ));
-        envs.push((
-            "XDG_STATE_HOME".to_string(),
-            PathBuf::from(&home_dir)
-                .join(".local/state")
-                .display()
-                .to_string(),
-        ));
-        envs.push((
-            "XDG_DATA_HOME".to_string(),
-            PathBuf::from(&home_dir)
-                .join(".local/share")
-                .display()
-                .to_string(),
-        ));
     }
     envs
 }
@@ -1011,26 +980,11 @@ mod tests {
             env_map.get("AGENT_BROWSER_HOME_DIR").map(String::as_str),
             Some("/srv/clawpod/reviewer-home")
         );
-        assert_eq!(
-            env_map.get("HOME").map(String::as_str),
-            Some("/srv/clawpod/reviewer-home")
-        );
-        assert_eq!(
-            env_map.get("XDG_CONFIG_HOME").map(String::as_str),
-            Some("/srv/clawpod/reviewer-home/.config")
-        );
-        assert_eq!(
-            env_map.get("XDG_CACHE_HOME").map(String::as_str),
-            Some("/srv/clawpod/reviewer-home/.cache")
-        );
-        assert_eq!(
-            env_map.get("XDG_STATE_HOME").map(String::as_str),
-            Some("/srv/clawpod/reviewer-home/.local/state")
-        );
-        assert_eq!(
-            env_map.get("XDG_DATA_HOME").map(String::as_str),
-            Some("/srv/clawpod/reviewer-home/.local/share")
-        );
+        assert!(!env_map.contains_key("HOME"));
+        assert!(!env_map.contains_key("XDG_CONFIG_HOME"));
+        assert!(!env_map.contains_key("XDG_CACHE_HOME"));
+        assert!(!env_map.contains_key("XDG_STATE_HOME"));
+        assert!(!env_map.contains_key("XDG_DATA_HOME"));
     }
 
     #[test]
@@ -1064,14 +1018,8 @@ mod tests {
             env_map.get("AGENT_BROWSER_HOME_DIR").map(String::as_str),
             Some("/tmp/leader-profile/.home")
         );
-        assert_eq!(
-            env_map.get("HOME").map(String::as_str),
-            Some("/tmp/leader-profile/.home")
-        );
-        assert_eq!(
-            env_map.get("XDG_CONFIG_HOME").map(String::as_str),
-            Some("/tmp/leader-profile/.home/.config")
-        );
+        assert!(!env_map.contains_key("HOME"));
+        assert!(!env_map.contains_key("XDG_CONFIG_HOME"));
     }
 
     #[test]
