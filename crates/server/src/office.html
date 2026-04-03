@@ -936,26 +936,240 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
     }
   }
 
-  function setupModelProviderBinding(currentModel) {
+  function setupModelProviderBinding(agent) {
+    const currentModel = (agent && agent.model) || '';
     const providerEl = document.getElementById('m-agent-provider');
     const modelEl = document.getElementById('m-agent-model');
     if (!providerEl || !modelEl) return;
-    populateModelSelect(modelEl, providerEl.value, currentModel || '');
-    providerEl.addEventListener('change', () => populateModelSelect(modelEl, providerEl.value, ''));
+    populateModelSelect(modelEl, providerEl.value, currentModel);
+    toggleAgentProviderFields();
+    toggleAgentHeartbeatFields();
+    providerEl.addEventListener('change', () => {
+      populateModelSelect(modelEl, providerEl.value, '');
+      toggleAgentProviderFields();
+    });
     modelEl.addEventListener('change', () => {
       const customRow = document.getElementById('m-agent-model-custom-row');
-      if (customRow) {
-        customRow.style.display = modelEl.value === '__custom__' ? '' : 'none';
-      }
+      if (customRow) customRow.style.display = modelEl.value === '__custom__' ? '' : 'none';
     });
+    const heartbeatToggle = document.getElementById('m-agent-heartbeat-enabled');
+    if (heartbeatToggle) {
+      heartbeatToggle.addEventListener('change', toggleAgentHeartbeatFields);
+    }
   }
 
   function resolveModelValue() {
     const sel = document.getElementById('m-agent-model');
     if (sel && sel.value === '__custom__') {
-      return document.getElementById('m-agent-model-custom').value;
+      return document.getElementById('m-agent-model-custom').value.trim();
     }
     return sel ? sel.value : '';
+  }
+
+  function toggleAgentProviderFields() {
+    const provider = document.getElementById('m-agent-provider')?.value || '';
+    const providerIdRow = document.getElementById('m-agent-provider-id-row');
+    if (providerIdRow) providerIdRow.style.display = provider === 'custom' ? '' : 'none';
+  }
+
+  function toggleAgentHeartbeatFields() {
+    const enabled = !!document.getElementById('m-agent-heartbeat-enabled')?.checked;
+    const fields = document.getElementById('m-agent-heartbeat-fields');
+    if (fields) fields.style.display = enabled ? '' : 'none';
+  }
+
+  function triStateBoolValue(value) {
+    return value === true ? 'true' : value === false ? 'false' : '';
+  }
+
+  function triStateBoolOptions(value) {
+    const current = triStateBoolValue(value);
+    return `
+      <option value="" ${current === '' ? 'selected' : ''}>Default</option>
+      <option value="true" ${current === 'true' ? 'selected' : ''}>True</option>
+      <option value="false" ${current === 'false' ? 'selected' : ''}>False</option>`;
+  }
+
+  function readTriStateBool(id) {
+    const value = document.getElementById(id)?.value || '';
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return null;
+  }
+
+  function renderAgentProviderSummary(agent) {
+    const provider = agent.provider || '';
+    if (provider === 'custom' && agent.provider_id) {
+      return `<span class="badge badge-blue">custom</span><div class="mono text-dim" style="margin-top:4px">${escapeHtml(agent.provider_id)}</div>`;
+    }
+    return `<span class="badge badge-blue">${escapeHtml(provider)}</span>`;
+  }
+
+  function renderAgentHeartbeatSummary(agent) {
+    const hb = agent.heartbeat;
+    if (!hb) return '<span class="text-dim">defaults</span>';
+    const parts = [];
+    if (hb.every) parts.push(hb.every);
+    if (hb.target) parts.push(hb.target);
+    if (hb.to) parts.push(truncate(hb.to, 18));
+    if (hb.direct_policy) parts.push(hb.direct_policy);
+    if (parts.length === 0) return '<span class="text-dim">override</span>';
+    return `<span class="mono text-dim">${escapeHtml(parts.join(' · '))}</span>`;
+  }
+
+  function renderAgentForm(agent, opts) {
+    const a = agent || {};
+    const hb = a.heartbeat || {};
+    const active = hb.active_hours || {};
+    const includeId = !!opts?.includeId;
+    const think = a.think_level || '';
+    const target = hb.target || '';
+    const directPolicy = hb.direct_policy || '';
+    return `
+      ${includeId ? '<div class="form-row"><label class="form-label">ID</label><input class="form-input" id="m-agent-id" placeholder="e.g. researcher"></div>' : ''}
+      <div class="form-row"><label class="form-label">Name</label><input class="form-input" id="m-agent-name" value="${escapeHtml(a.name || '')}" placeholder="Agent display name"></div>
+      <div class="form-row"><label class="form-label">Provider</label>
+        <select class="form-select" id="m-agent-provider">
+          ${['anthropic','openai','custom','mock'].map(p => `<option value="${p}" ${p === (a.provider || 'anthropic') ? 'selected' : ''}>${p}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row"><label class="form-label">Model</label><select class="form-select" id="m-agent-model"></select></div>
+      <div class="form-row" id="m-agent-model-custom-row" style="display:none"><label class="form-label">Custom Model ID</label><input class="form-input" id="m-agent-model-custom" placeholder="e.g. claude-sonnet-4-20250514"></div>
+      <div class="form-row" id="m-agent-provider-id-row" style="display:none"><label class="form-label">Custom Provider ID</label><input class="form-input" id="m-agent-provider-id" value="${escapeHtml(a.provider_id || '')}" placeholder="required for provider=custom"></div>
+      <div class="form-row"><label class="form-label">Think Level</label>
+        <select class="form-select" id="m-agent-think-level">
+          ${['','off','minimal','low','medium','high','xhigh','adaptive'].map(v => `<option value="${v}" ${v === think ? 'selected' : ''}>${v || 'Default'}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row"><label class="form-label">Browser Profile</label><input class="form-input" id="m-agent-browser-profile" value="${escapeHtml((a.browser && a.browser.profile) || '')}" placeholder="optional; falls back to browser.default_profile"></div>
+      <div class="form-row"><label class="form-label">Prompt File</label><input class="form-input" id="m-agent-prompt-file" value="${escapeHtml(a.prompt_file || '')}" placeholder="relative to workspace or absolute"></div>
+      <div class="form-row"><label class="form-label">System Prompt</label><textarea class="form-textarea" id="m-agent-system-prompt" style="min-height:120px">${escapeHtml(a.system_prompt || '')}</textarea></div>
+      <div style="margin:16px 0 8px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)">Heartbeat Override</div>
+      <div class="form-row">
+        <label class="form-label" for="m-agent-heartbeat-enabled">Enabled</label>
+        <label style="display:inline-flex;align-items:center;gap:8px">
+          <input type="checkbox" id="m-agent-heartbeat-enabled" ${(a.heartbeat ? 'checked' : '')}>
+          <span class="text-dim">Store agent-level heartbeat settings</span>
+        </label>
+      </div>
+      <div id="m-agent-heartbeat-fields" style="display:${a.heartbeat ? '' : 'none'}">
+        <div class="form-row"><label class="form-label">Every</label><input class="form-input" id="m-agent-heartbeat-every" value="${escapeHtml(hb.every || '')}" placeholder="e.g. 30m"></div>
+        <div class="form-row"><label class="form-label">Model</label><input class="form-input" id="m-agent-heartbeat-model" value="${escapeHtml(hb.model || '')}" placeholder="optional override"></div>
+        <div class="form-row"><label class="form-label">Prompt</label><textarea class="form-textarea" id="m-agent-heartbeat-prompt" style="min-height:90px">${escapeHtml(hb.prompt || '')}</textarea></div>
+        <div class="form-row"><label class="form-label">Target</label>
+          <select class="form-select" id="m-agent-heartbeat-target">
+            ${[['','Inherit'],['none','None'],['last','Last'],['telegram','Telegram'],['discord','Discord'],['slack','Slack'],['chatroom','Chatroom']].map(([value,label]) => `<option value="${value}" ${value === target ? 'selected' : ''}>${label}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row"><label class="form-label">To</label><input class="form-input" id="m-agent-heartbeat-to" value="${escapeHtml(hb.to || '')}" placeholder="channel or recipient id"></div>
+        <div class="form-row"><label class="form-label">Account ID</label><input class="form-input" id="m-agent-heartbeat-account-id" value="${escapeHtml(hb.account_id || '')}" placeholder="optional account id"></div>
+        <div class="form-row"><label class="form-label">Ack Max Chars</label><input class="form-input" id="m-agent-heartbeat-ack-max-chars" type="number" min="1" value="${hb.ack_max_chars || ''}" placeholder="300"></div>
+        <div class="form-row"><label class="form-label">Direct Policy</label>
+          <select class="form-select" id="m-agent-heartbeat-direct-policy">
+            ${[['','Inherit'],['allow','Allow'],['block','Block']].map(([value,label]) => `<option value="${value}" ${value === directPolicy ? 'selected' : ''}>${label}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row"><label class="form-label">Include Reasoning</label><select class="form-select" id="m-agent-heartbeat-include-reasoning">${triStateBoolOptions(hb.include_reasoning)}</select></div>
+        <div class="form-row"><label class="form-label">Light Context</label><select class="form-select" id="m-agent-heartbeat-light-context">${triStateBoolOptions(hb.light_context)}</select></div>
+        <div class="form-row"><label class="form-label">Isolated Session</label><select class="form-select" id="m-agent-heartbeat-isolated-session">${triStateBoolOptions(hb.isolated_session)}</select></div>
+        <div class="form-row"><label class="form-label">Active Start</label><input class="form-input" id="m-agent-heartbeat-active-start" value="${escapeHtml(active.start || '')}" placeholder="09:00"></div>
+        <div class="form-row"><label class="form-label">Active End</label><input class="form-input" id="m-agent-heartbeat-active-end" value="${escapeHtml(active.end || '')}" placeholder="18:00"></div>
+        <div class="form-row"><label class="form-label">Active Timezone</label><input class="form-input" id="m-agent-heartbeat-active-timezone" value="${escapeHtml(active.timezone || '')}" placeholder="UTC"></div>
+      </div>`;
+  }
+
+  function applyAgentBrowserProfile(agent) {
+    const browserProfile = $('#m-agent-browser-profile').value.trim();
+    if (browserProfile) {
+      agent.browser = { profile: browserProfile };
+    }
+  }
+
+  function applyAgentHeartbeat(agent) {
+    if (!$('#m-agent-heartbeat-enabled')?.checked) return;
+    const heartbeat = {};
+    const every = $('#m-agent-heartbeat-every').value.trim();
+    if (every) heartbeat.every = every;
+    const model = $('#m-agent-heartbeat-model').value.trim();
+    if (model) heartbeat.model = model;
+    const prompt = $('#m-agent-heartbeat-prompt').value;
+    if (prompt.trim()) heartbeat.prompt = prompt;
+    const target = $('#m-agent-heartbeat-target').value;
+    if (target) heartbeat.target = target;
+    const to = $('#m-agent-heartbeat-to').value.trim();
+    if (to) heartbeat.to = to;
+    const accountId = $('#m-agent-heartbeat-account-id').value.trim();
+    if (accountId) heartbeat.account_id = accountId;
+    const ackMaxChars = $('#m-agent-heartbeat-ack-max-chars').value.trim();
+    if (ackMaxChars) {
+      const parsed = Number(ackMaxChars);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error('Heartbeat ack max chars must be a positive integer');
+      }
+      heartbeat.ack_max_chars = parsed;
+    }
+    const directPolicy = $('#m-agent-heartbeat-direct-policy').value;
+    if (directPolicy) heartbeat.direct_policy = directPolicy;
+    const includeReasoning = readTriStateBool('m-agent-heartbeat-include-reasoning');
+    if (includeReasoning !== null) heartbeat.include_reasoning = includeReasoning;
+    const lightContext = readTriStateBool('m-agent-heartbeat-light-context');
+    if (lightContext !== null) heartbeat.light_context = lightContext;
+    const isolatedSession = readTriStateBool('m-agent-heartbeat-isolated-session');
+    if (isolatedSession !== null) heartbeat.isolated_session = isolatedSession;
+    const activeStart = $('#m-agent-heartbeat-active-start').value.trim();
+    const activeEnd = $('#m-agent-heartbeat-active-end').value.trim();
+    const activeTimezone = $('#m-agent-heartbeat-active-timezone').value.trim();
+    if (activeStart || activeEnd || activeTimezone) {
+      if (!activeStart || !activeEnd) {
+        throw new Error('Heartbeat active hours require both start and end');
+      }
+      heartbeat.active_hours = {};
+      heartbeat.active_hours.start = activeStart;
+      heartbeat.active_hours.end = activeEnd;
+      if (activeTimezone) heartbeat.active_hours.timezone = activeTimezone;
+    }
+    if (Object.keys(heartbeat).length === 0) {
+      throw new Error('Set at least one heartbeat override or disable the heartbeat override toggle');
+    }
+    agent.heartbeat = heartbeat;
+  }
+
+  function buildAgentPayload(options = {}) {
+    const id = $('#m-agent-id') ? $('#m-agent-id').value.trim() : '';
+    const fallbackName = options.fallbackName || '';
+    const name = $('#m-agent-name').value.trim() || fallbackName;
+    const provider = $('#m-agent-provider').value;
+    const model = resolveModelValue().trim();
+    if (options.requireId && !id) {
+      throw new Error('Agent ID is required');
+    }
+    if (!name) {
+      throw new Error('Agent name is required');
+    }
+    if (!model) {
+      throw new Error('Agent model is required');
+    }
+    const agent = {
+      name,
+      provider,
+      model,
+    };
+    const thinkLevel = $('#m-agent-think-level').value;
+    if (thinkLevel) agent.think_level = thinkLevel;
+    const providerId = $('#m-agent-provider-id').value.trim();
+    if (provider === 'custom') {
+      if (!providerId) {
+        throw new Error('Custom provider agents require a provider ID');
+      }
+      agent.provider_id = providerId;
+    }
+    const promptFile = $('#m-agent-prompt-file').value.trim();
+    if (promptFile) agent.prompt_file = promptFile;
+    const systemPrompt = $('#m-agent-system-prompt').value;
+    if (systemPrompt.trim()) agent.system_prompt = systemPrompt;
+    applyAgentBrowserProfile(agent);
+    applyAgentHeartbeat(agent);
+    return { id, agent };
   }
 
   async function renderDashboard(el) {
@@ -1070,14 +1284,18 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
     }
 
     el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
-      <thead><tr><th>ID</th><th>Name</th><th>Provider</th><th>Model</th><th>Think</th><th>Browser Profile</th><th></th></tr></thead>
+      <thead><tr><th>ID</th><th>Name</th><th>Provider</th><th>Model</th><th>Think</th><th>Heartbeat</th><th>Browser Profile</th><th></th></tr></thead>
       <tbody>
         ${entries.map(([id, a]) => `<tr>
           <td class="mono">${escapeHtml(id)}</td>
-          <td>${escapeHtml(a.name)}</td>
-          <td><span class="badge badge-blue">${escapeHtml(a.provider || '')}</span></td>
+          <td>
+            <div>${escapeHtml(a.name)}</div>
+            ${a.prompt_file ? `<div class="mono text-dim" style="margin-top:4px">${escapeHtml(a.prompt_file)}</div>` : (a.system_prompt ? '<div class="text-dim" style="margin-top:4px">inline prompt</div>' : '')}
+          </td>
+          <td>${renderAgentProviderSummary(a)}</td>
           <td class="mono text-dim">${escapeHtml(a.model)}</td>
           <td class="mono text-dim">${escapeHtml(a.think_level || 'default')}</td>
+          <td>${renderAgentHeartbeatSummary(a)}</td>
           <td>${(() => {
             const profileName = (a.browser && a.browser.profile) || defaultBrowserProfile || '';
             if (!profileName) return '<span class="text-dim">-</span>';
@@ -1104,49 +1322,18 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
 
   window.showCreateAgentModal = async function() {
     await loadModelCatalog();
-    showModal('Create Agent', `
-      <div class="form-row"><label class="form-label">ID</label><input class="form-input" id="m-agent-id" placeholder="e.g. researcher"></div>
-      <div class="form-row"><label class="form-label">Name</label><input class="form-input" id="m-agent-name" placeholder="Agent display name"></div>
-      <div class="form-row"><label class="form-label">Provider</label>
-        <select class="form-select" id="m-agent-provider"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option><option value="custom">Custom</option><option value="mock">Mock</option></select>
-      </div>
-      <div class="form-row"><label class="form-label">Model</label><select class="form-select" id="m-agent-model"></select></div>
-      <div class="form-row" id="m-agent-model-custom-row" style="display:none"><label class="form-label">Custom Model ID</label><input class="form-input" id="m-agent-model-custom" placeholder="e.g. claude-sonnet-4-20250514"></div>
-      <div class="form-row"><label class="form-label">Think Level</label>
-        <select class="form-select" id="m-agent-think-level">
-          <option value="">Default</option>
-          <option value="off">Off</option>
-          <option value="minimal">Minimal</option>
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-          <option value="xhigh">Xhigh</option>
-          <option value="adaptive">Adaptive</option>
-        </select>
-      </div>
-      <div class="form-row"><label class="form-label">Browser Profile</label><input class="form-input" id="m-agent-browser-profile" placeholder="optional; falls back to browser.default_profile"></div>
-    `, '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitCreateAgent()">Create</button>');
-    setupModelProviderBinding('');
+    const agent = { provider: 'anthropic' };
+    showModal('Create Agent', renderAgentForm(agent, { includeId: true }), '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitCreateAgent()">Create</button>');
+    setupModelProviderBinding(agent);
   };
-
-  function applyAgentBrowserProfile(agent) {
-    const browserProfile = $('#m-agent-browser-profile').value.trim();
-    if (browserProfile) {
-      agent.browser = { profile: browserProfile };
-    }
-  }
 
   window.submitCreateAgent = async function() {
     try {
-      const agent = {
-        name: $('#m-agent-name').value,
-        provider: $('#m-agent-provider').value,
-        model: resolveModelValue(),
-      };
-      const thinkLevel = $('#m-agent-think-level').value;
-      if (thinkLevel) agent.think_level = thinkLevel;
-      applyAgentBrowserProfile(agent);
-      const data = await POST('/api/agents', { id: $('#m-agent-id').value, agent });
+      const { id, agent } = buildAgentPayload({
+        requireId: true,
+        fallbackName: $('#m-agent-id').value.trim(),
+      });
+      const data = await POST('/api/agents', { id, agent });
       closeModal();
       const assignedTeam = data?.assigned_team_id ? ` and added to team ${data.assigned_team_id}` : '';
       toast(`Agent created${assignedTeam} - restart runtime for full effect`, 'success');
@@ -1159,36 +1346,14 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
       await loadModelCatalog();
       const data = await GET(`/api/agents/${id}`);
       const a = data.agent;
-      showModal(`Edit Agent: ${id}`, `
-        <div class="form-row"><label class="form-label">Name</label><input class="form-input" id="m-agent-name" value="${escapeHtml(a.name)}"></div>
-        <div class="form-row"><label class="form-label">Provider</label>
-          <select class="form-select" id="m-agent-provider">
-            ${['anthropic','openai','custom','mock'].map(p => `<option value="${p}" ${p===a.provider?'selected':''}>${p}</option>`).join('')}
-          </select>
-        </div>
-        <div class="form-row"><label class="form-label">Model</label><select class="form-select" id="m-agent-model"></select></div>
-        <div class="form-row" id="m-agent-model-custom-row" style="display:none"><label class="form-label">Custom Model ID</label><input class="form-input" id="m-agent-model-custom"></div>
-        <div class="form-row"><label class="form-label">Think Level</label>
-          <select class="form-select" id="m-agent-think-level">
-            ${['','off','minimal','low','medium','high','xhigh','adaptive'].map(v => `<option value="${v}" ${v===(a.think_level||'')?'selected':''}>${v || 'Default'}</option>`).join('')}
-          </select>
-        </div>
-        <div class="form-row"><label class="form-label">Browser Profile</label><input class="form-input" id="m-agent-browser-profile" value="${escapeHtml((a.browser && a.browser.profile) || '')}" placeholder="optional; falls back to browser.default_profile"></div>
-      `, `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitEditAgent('${escapeHtml(id)}')">Save</button>`);
-      setupModelProviderBinding(a.model || '');
+      showModal(`Edit Agent: ${id}`, renderAgentForm(a, { includeId: false }), `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitEditAgent('${escapeHtml(id)}')">Save</button>`);
+      setupModelProviderBinding(a);
     } catch (err) { toast(err.message, 'error'); }
   };
 
   window.submitEditAgent = async function(id) {
     try {
-      const agent = {
-        name: $('#m-agent-name').value,
-        provider: $('#m-agent-provider').value,
-        model: resolveModelValue(),
-      };
-      const thinkLevel = $('#m-agent-think-level').value;
-      if (thinkLevel) agent.think_level = thinkLevel;
-      applyAgentBrowserProfile(agent);
+      const { agent } = buildAgentPayload({ fallbackName: id });
       await PUT(`/api/agents/${id}`, { agent });
       closeModal();
       toast('Agent updated — restart runtime for full effect', 'success');
@@ -1369,13 +1534,15 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
     }
 
     el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
-      <thead><tr><th>Agent</th><th>Channel</th><th>Peer ID</th><th>Group ID</th><th></th></tr></thead>
+      <thead><tr><th>Agent</th><th>Channel</th><th>Account ID</th><th>Peer ID</th><th>Group ID</th><th>Thread ID</th><th></th></tr></thead>
       <tbody>
         ${bindings.map(b => `<tr>
           <td><span class="badge badge-blue">${escapeHtml(b.agent_id)}</span></td>
           <td>${escapeHtml(b.match?.channel || '-')}</td>
+          <td class="mono">${escapeHtml(b.match?.account_id || '-')}</td>
           <td class="mono">${escapeHtml(b.match?.peer_id || '-')}</td>
           <td class="mono">${escapeHtml(b.match?.group_id || '-')}</td>
+          <td class="mono">${escapeHtml(b.match?.thread_id || '-')}</td>
           <td>
             <div class="btn-group">
               <button class="btn btn-sm" onclick="showEditBindingModal(${b.index})">Edit</button>
@@ -1399,16 +1566,20 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
           <option value="">-</option><option value="discord">discord</option><option value="slack">slack</option><option value="telegram">telegram</option>
         </select>
       </div>
+      <div class="form-row"><label class="form-label">Account ID</label><input class="form-input mono" id="m-bind-account" placeholder="optional"></div>
       <div class="form-row"><label class="form-label">Peer ID (channel/user ID)</label><input class="form-input" id="m-bind-peer" placeholder="e.g. 1486343914892820500"></div>
       <div class="form-row"><label class="form-label">Group ID</label><input class="form-input" id="m-bind-group" placeholder="optional"></div>
+      <div class="form-row"><label class="form-label">Thread ID</label><input class="form-input mono" id="m-bind-thread" placeholder="optional"></div>
     `, '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitCreateBinding()">Create</button>');
   };
 
   window.submitCreateBinding = async function() {
     const m = {};
     const ch = $('#m-bind-channel').value; if (ch) m.channel = ch;
+    const account = $('#m-bind-account').value.trim(); if (account) m.account_id = account;
     const peer = $('#m-bind-peer').value.trim(); if (peer) m.peer_id = peer;
     const group = $('#m-bind-group').value.trim(); if (group) m.group_id = group;
+    const thread = $('#m-bind-thread').value.trim(); if (thread) m.thread_id = thread;
     try {
       await POST('/api/bindings', { agent_id: $('#m-bind-agent').value, match: m });
       closeModal();
@@ -1435,16 +1606,20 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
           <option value="telegram" ${m.channel==='telegram'?'selected':''}>telegram</option>
         </select>
       </div>
+      <div class="form-row"><label class="form-label">Account ID</label><input class="form-input mono" id="m-bind-account" value="${escapeHtml(m.account_id || '')}"></div>
       <div class="form-row"><label class="form-label">Peer ID</label><input class="form-input" id="m-bind-peer" value="${escapeHtml(m.peer_id || '')}"></div>
       <div class="form-row"><label class="form-label">Group ID</label><input class="form-input" id="m-bind-group" value="${escapeHtml(m.group_id || '')}"></div>
+      <div class="form-row"><label class="form-label">Thread ID</label><input class="form-input mono" id="m-bind-thread" value="${escapeHtml(m.thread_id || '')}"></div>
     `, `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitEditBinding(${index})">Save</button>`);
   };
 
   window.submitEditBinding = async function(index) {
     const m = {};
     const ch = $('#m-bind-channel').value; if (ch) m.channel = ch;
+    const account = $('#m-bind-account').value.trim(); if (account) m.account_id = account;
     const peer = $('#m-bind-peer').value.trim(); if (peer) m.peer_id = peer;
     const group = $('#m-bind-group').value.trim(); if (group) m.group_id = group;
+    const thread = $('#m-bind-thread').value.trim(); if (thread) m.thread_id = thread;
     try {
       await PUT(`/api/bindings/${index}`, { agent_id: $('#m-bind-agent').value, match: m });
       closeModal();
@@ -1788,19 +1963,164 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
   }
 
   /* Access */
+  window._editingChannelAccess = null;
+
+  function channelAccessOverridesFromConfig(config) {
+    const channels = ((config || {}).channels) || {};
+    return ['discord', 'slack', 'telegram'].flatMap(channel => {
+      const access = (((channels[channel] || {}).access) || {});
+      return Object.entries(access.channels || {})
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([id, rule]) => ({
+          channel,
+          id,
+          allow: rule.allow !== false,
+          require_mention: rule.require_mention,
+          dm_policy: access.dm_policy || 'open',
+          group_policy: access.group_policy || 'disabled',
+        }));
+    });
+  }
+
+  function ensureChannelAccessMap(config, channel) {
+    config.channels = config.channels || {};
+    config.channels[channel] = config.channels[channel] || {};
+    config.channels[channel].access = config.channels[channel].access || {};
+    config.channels[channel].access.channels = config.channels[channel].access.channels || {};
+    return config.channels[channel].access.channels;
+  }
+
+  window.showCreateChannelAccessModal = function() {
+    window._editingChannelAccess = null;
+    showModal('Add Channel Override', `
+      <div class="form-row"><label class="form-label">Channel</label>
+        <select class="form-select" id="m-access-channel">
+          <option value="discord">discord</option>
+          <option value="slack">slack</option>
+          <option value="telegram">telegram</option>
+        </select>
+      </div>
+      <div class="form-row"><label class="form-label">Channel ID</label><input class="form-input mono" id="m-access-id" placeholder="channel id or *"></div>
+      <div class="form-row"><label class="form-label">Allow</label>
+        <select class="form-select" id="m-access-allow">
+          <option value="true">Allow</option>
+          <option value="false">Deny</option>
+        </select>
+      </div>
+      <div class="form-row"><label class="form-label">Require Mention</label>
+        <select class="form-select" id="m-access-require-mention">
+          <option value="">Default</option>
+          <option value="true">True</option>
+          <option value="false">False</option>
+        </select>
+      </div>
+    `, '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitChannelAccessOverride()">Save</button>');
+  };
+
+  window.showEditChannelAccessModal = function(channel, id, allow, requireMention) {
+    window._editingChannelAccess = { channel, id };
+    showModal('Edit Channel Override', `
+      <div class="form-row"><label class="form-label">Channel</label>
+        <select class="form-select" id="m-access-channel">
+          <option value="discord" ${channel === 'discord' ? 'selected' : ''}>discord</option>
+          <option value="slack" ${channel === 'slack' ? 'selected' : ''}>slack</option>
+          <option value="telegram" ${channel === 'telegram' ? 'selected' : ''}>telegram</option>
+        </select>
+      </div>
+      <div class="form-row"><label class="form-label">Channel ID</label><input class="form-input mono" id="m-access-id" value="${escapeHtml(id)}"></div>
+      <div class="form-row"><label class="form-label">Allow</label>
+        <select class="form-select" id="m-access-allow">
+          <option value="true" ${allow ? 'selected' : ''}>Allow</option>
+          <option value="false" ${!allow ? 'selected' : ''}>Deny</option>
+        </select>
+      </div>
+      <div class="form-row"><label class="form-label">Require Mention</label>
+        <select class="form-select" id="m-access-require-mention">
+          <option value="" ${requireMention === '' ? 'selected' : ''}>Default</option>
+          <option value="true" ${requireMention === 'true' ? 'selected' : ''}>True</option>
+          <option value="false" ${requireMention === 'false' ? 'selected' : ''}>False</option>
+        </select>
+      </div>
+    `, '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitChannelAccessOverride()">Save</button>');
+  };
+
+  window.submitChannelAccessOverride = async function() {
+    try {
+      const channel = $('#m-access-channel').value;
+      const id = $('#m-access-id').value.trim();
+      if (!id) throw new Error('Channel ID is required');
+      const settings = await GET('/api/settings');
+      const config = settings.config || {};
+      const original = window._editingChannelAccess;
+      if (original && original.channel && original.id && (original.channel !== channel || original.id !== id)) {
+        const previous = config.channels?.[original.channel]?.access?.channels;
+        if (previous) delete previous[original.id];
+      }
+      const channels = ensureChannelAccessMap(config, channel);
+      const rule = { allow: $('#m-access-allow').value === 'true' };
+      const requireMention = $('#m-access-require-mention').value;
+      if (requireMention !== '') rule.require_mention = requireMention === 'true';
+      channels[id] = rule;
+      await PUT('/api/settings', config);
+      window._editingChannelAccess = null;
+      closeModal();
+      toast('Channel override saved', 'success');
+      navigate('access');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  window.deleteChannelAccessOverride = async function(channel, id) {
+    if (!confirm(`Delete ${channel} override "${id}"?`)) return;
+    try {
+      const settings = await GET('/api/settings');
+      const config = settings.config || {};
+      const channels = config.channels?.[channel]?.access?.channels;
+      if (!channels || !channels[id]) throw new Error('Channel override not found');
+      delete channels[id];
+      await PUT('/api/settings', config);
+      toast('Channel override deleted', 'success');
+      navigate('access');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
   async function renderAccess(el) {
-    const data = await GET('/api/access/senders');
+    const [data, settings] = await Promise.all([
+      GET('/api/access/senders'),
+      GET('/api/settings'),
+    ]);
     const entries = data.entries || [];
+    const overrides = channelAccessOverridesFromConfig(settings.config || {});
 
-    if (entries.length === 0) {
-      el.innerHTML = '<div class="empty">No sender access entries</div>';
-      return;
-    }
+    $('#header-actions').innerHTML = '<button class="btn btn-primary btn-sm" onclick="showCreateChannelAccessModal()">+ Add Channel Override</button>';
 
-    el.innerHTML = `<div class="card"><div class="card-body table-wrap"><table>
+    el.innerHTML = `
+      <div class="card" style="margin-bottom:12px">
+        <div class="card-header">Channel Overrides</div>
+        <div class="card-body table-wrap">
+          ${overrides.length === 0 ? '<div class="empty">No per-channel overrides configured</div>' : `<table>
+            <thead><tr><th>Channel</th><th>ID</th><th>Allow</th><th>Require Mention</th><th>Base Policy</th><th></th></tr></thead>
+            <tbody>
+              ${overrides.map(rule => `<tr>
+                <td><span class="badge badge-gray">${escapeHtml(rule.channel)}</span></td>
+                <td class="mono">${escapeHtml(rule.id)}</td>
+                <td>${rule.allow ? '<span class="badge badge-green">allow</span>' : '<span class="badge badge-red">deny</span>'}</td>
+                <td>${rule.require_mention === true ? '<span class="badge badge-blue">true</span>' : (rule.require_mention === false ? '<span class="badge badge-gray">false</span>' : '<span class="text-dim">default</span>')}</td>
+                <td class="text-dim">dm=${escapeHtml(rule.dm_policy)} / group=${escapeHtml(rule.group_policy)}</td>
+                <td>
+                  <div class="btn-group">
+                    <button class="btn btn-sm" onclick="showEditChannelAccessModal('${escapeHtml(rule.channel)}','${escapeHtml(rule.id)}',${rule.allow ? 'true' : 'false'},'${rule.require_mention === true ? 'true' : (rule.require_mention === false ? 'false' : '')}')">Edit</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteChannelAccessOverride('${escapeHtml(rule.channel)}','${escapeHtml(rule.id)}')">Delete</button>
+                  </div>
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>`}
+        </div>
+      </div>
+      <div class="card"><div class="card-header">Sender Approvals</div><div class="card-body table-wrap"><table>
       <thead><tr><th>Channel</th><th>Sender</th><th>Status</th><th>Peer</th><th>Requested</th><th></th></tr></thead>
       <tbody>
-        ${entries.map(e => `<tr>
+        ${entries.length === 0 ? '<tr><td colspan="6" class="text-dim">No sender access entries</td></tr>' : entries.map(e => `<tr>
           <td><span class="badge badge-gray">${escapeHtml(e.channel)}</span></td>
           <td class="mono">${escapeHtml(e.sender_id)}${e.sender_label ? ` <span class="text-dim">(${escapeHtml(e.sender_label)})</span>` : ''}</td>
           <td>${statusBadge(e.status)}</td>
@@ -1857,6 +2177,23 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
     return mode;
   }
 
+  function heartbeatFlagBadge(label, enabled) {
+    return `<span class="badge ${enabled ? 'badge-green' : 'badge-gray'}">${escapeHtml(label)}:${enabled ? 'on' : 'off'}</span>`;
+  }
+
+  function heartbeatTargetBadge(target) {
+    const value = (target || 'none').toString();
+    return `<span class="badge ${value === 'none' ? 'badge-gray' : 'badge-blue'}">${escapeHtml(value)}</span>`;
+  }
+
+  function heartbeatActiveHoursSummary(activeHours) {
+    if (!activeHours || (!activeHours.start && !activeHours.end)) {
+      return '<span class="text-dim">Always</span>';
+    }
+    const timezone = activeHours.timezone ? ` ${escapeHtml(activeHours.timezone)}` : '';
+    return `<span class="mono text-dim">${escapeHtml(activeHours.start || '?')} → ${escapeHtml(activeHours.end || '?')}${timezone}</span>`;
+  }
+
   async function renderHeartbeat(el) {
     const [agentsData, heartbeatData] = await Promise.all([
       GET('/api/agents'),
@@ -1866,9 +2203,10 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
     const runs = heartbeatData.runs || [];
     const hb = heartbeatData.config || {};
     const policies = heartbeatData.agent_policies || {};
-    const policyAgents = Object.keys(policies);
+    const policyAgents = Object.keys(policies).sort();
 
     if (heartbeatAgentId && !agents.includes(heartbeatAgentId)) heartbeatAgentId = '';
+    const visiblePolicyAgents = heartbeatAgentId ? policyAgents.filter(id => id === heartbeatAgentId) : policyAgents;
 
     const sourceLabel = (src) => {
       if (src === 'agent') return '<span class="badge badge-blue">agent</span>';
@@ -1896,11 +2234,11 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
           <button class="btn btn-sm" onclick="triggerHeartbeatSelected()" ${heartbeatAgentId ? '' : 'disabled'}>Run${heartbeatAgentId ? ' ' + escapeHtml(heartbeatAgentId) : ''}</button>
         </div>
       </div>
-      ${policyAgents.length > 0 ? `
+      ${visiblePolicyAgents.length > 0 ? `
       <div class="card" style="margin-bottom:12px"><div class="card-body table-wrap"><table>
-        <thead><tr><th>Agent</th><th>Interval</th><th>Source</th><th></th></tr></thead>
+        <thead><tr><th>Agent</th><th>Interval</th><th>Source</th><th>Delivery</th><th>Context</th><th>Active Hours</th><th></th></tr></thead>
         <tbody>
-          ${policyAgents.map(id => {
+          ${visiblePolicyAgents.map(id => {
             const p = policies[id];
             return `<tr>
               <td><span class="badge badge-blue">${escapeHtml(id)}</span></td>
@@ -1909,7 +2247,30 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
                   value="${escapeHtml(p.every_display)}" style="width:80px" placeholder="30m">
               </td>
               <td>${sourceLabel(p.source)}</td>
-              <td><button class="btn btn-sm" onclick="saveAgentInterval('${escapeHtml(id)}')">Save</button></td>
+              <td>
+                <div>${heartbeatTargetBadge(p.target)}${p.to ? ` <span class="mono text-dim">${escapeHtml(truncate(p.to, 28))}</span>` : ''}</div>
+                <div class="mono text-dim" style="margin-top:4px">
+                  dm=${escapeHtml(p.direct_policy || 'allow')}
+                  ${p.account_id ? ` · account=${escapeHtml(p.account_id)}` : ''}
+                  · ack=${escapeHtml(String(p.ack_max_chars || '-'))}
+                </div>
+              </td>
+              <td>
+                <div class="mono text-dim">${escapeHtml(p.model || 'agent model')}</div>
+                <div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">
+                  ${heartbeatFlagBadge('reasoning', !!p.include_reasoning)}
+                  ${heartbeatFlagBadge('light', !!p.light_context)}
+                  ${heartbeatFlagBadge('isolated', !!p.isolated_session)}
+                  ${p.prompt_preview ? `<span class="badge badge-gray" title="${escapeHtml(p.prompt_preview)}">prompt</span>` : ''}
+                </div>
+              </td>
+              <td>${heartbeatActiveHoursSummary(p.active_hours)}</td>
+              <td>
+                <div class="btn-group">
+                  <button class="btn btn-sm" onclick="saveAgentInterval('${escapeHtml(id)}')">Save</button>
+                  <button class="btn btn-sm" onclick="showEditAgentModal('${escapeHtml(id)}')">Edit Agent</button>
+                </div>
+              </td>
             </tr>`;
           }).join('')}
         </tbody>

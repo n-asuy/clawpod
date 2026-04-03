@@ -1061,18 +1061,14 @@ async fn list_heartbeat_runs(
         .agent_defaults
         .as_ref()
         .and_then(|d| d.heartbeat.as_ref());
-    let any_explicit = config.agents.values().any(|a| a.heartbeat.is_some());
     let mut agent_policies = serde_json::Map::new();
     for (agent_id, agent_cfg) in &config.agents {
-        if any_explicit && agent_cfg.heartbeat.is_none() {
-            continue;
-        }
         let agent_hb = agent_cfg.heartbeat.as_ref();
         if let Ok(policy) = heartbeat::policy::resolve_effective_policy(agent_defaults_hb, agent_hb)
         {
-            let source = if agent_hb.and_then(|h| h.every.as_ref()).is_some() {
+            let source = if agent_hb.is_some() {
                 "agent"
-            } else if agent_defaults_hb.and_then(|h| h.every.as_ref()).is_some() {
+            } else if agent_defaults_hb.is_some() {
                 "agent_defaults"
             } else {
                 "default"
@@ -1083,6 +1079,17 @@ async fn list_heartbeat_runs(
                     "every_sec": policy.every.as_secs(),
                     "every_display": format_duration_human(policy.every),
                     "source": source,
+                    "model": policy.model,
+                    "prompt_preview": policy.prompt.lines().next().unwrap_or(""),
+                    "target": policy.target,
+                    "to": policy.to,
+                    "account_id": policy.account_id,
+                    "ack_max_chars": policy.ack_max_chars,
+                    "direct_policy": policy.direct_policy,
+                    "include_reasoning": policy.include_reasoning,
+                    "light_context": policy.light_context,
+                    "isolated_session": policy.isolated_session,
+                    "active_hours": policy.active_hours,
                 }),
             );
         }

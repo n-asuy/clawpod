@@ -628,7 +628,7 @@ impl RuntimeConfig {
                 bail!("default_team must reference an existing team: {team_id}");
             }
         }
-
+        self.validate_agents()?;
         self.validate_browser_profiles()?;
 
         Ok(())
@@ -1010,6 +1010,53 @@ impl RuntimeConfig {
         Ok(())
     }
 
+    fn validate_agents(&self) -> Result<()> {
+        for (agent_id, agent) in &self.agents {
+            if agent.name.trim().is_empty() {
+                bail!("agents.{agent_id}.name must not be empty");
+            }
+            if agent.model.trim().is_empty() {
+                bail!("agents.{agent_id}.model must not be empty");
+            }
+            if let Some(prompt_file) = &agent.prompt_file {
+                if prompt_file.trim().is_empty() {
+                    bail!("agents.{agent_id}.prompt_file must not be empty");
+                }
+            }
+            if matches!(agent.provider, ProviderKind::Custom) {
+                let provider_id = agent
+                    .provider_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| {
+                        format!("agents.{agent_id}.provider_id is required for custom providers")
+                    })?;
+                if !self.custom_providers.contains_key(provider_id) {
+                    bail!(
+                        "agents.{agent_id}.provider_id references unknown custom provider: {provider_id}"
+                    );
+                }
+            }
+            if let Some(heartbeat) = &agent.heartbeat {
+                validate_agent_heartbeat_config(
+                    heartbeat,
+                    &format!("agents.{agent_id}.heartbeat"),
+                )?;
+            }
+        }
+
+        if let Some(defaults) = self
+            .agent_defaults
+            .as_ref()
+            .and_then(|defaults| defaults.heartbeat.as_ref())
+        {
+            validate_agent_heartbeat_config(defaults, "agent_defaults.heartbeat")?;
+        }
+
+        Ok(())
+    }
+
     fn resolve_browser_path(&self, raw: &str) -> PathBuf {
         let path = expand_tilde(raw);
         if path.is_absolute() {
@@ -1133,6 +1180,24 @@ fn expand_tilde(raw: &str) -> PathBuf {
 
 fn default_server_host() -> String {
     "127.0.0.1".to_string()
+}
+
+fn validate_agent_heartbeat_config(config: &AgentHeartbeatConfig, label: &str) -> Result<()> {
+    if let Some(every) = &config.every {
+        parse_duration_str(every)
+            .with_context(|| format!("{label}.every must be a duration like 30m or 1h"))?;
+    }
+    if let Some(ack_max_chars) = config.ack_max_chars {
+        if ack_max_chars == 0 {
+            bail!("{label}.ack_max_chars must be greater than zero");
+        }
+    }
+    if let Some(active_hours) = &config.active_hours {
+        if active_hours.start.trim().is_empty() || active_hours.end.trim().is_empty() {
+            bail!("{label}.active_hours requires both start and end");
+        }
+    }
+    Ok(())
 }
 
 fn is_valid_profile_name(value: &str) -> bool {
@@ -2009,6 +2074,76 @@ show_ok = true
             .as_ref()
             .unwrap();
         assert_eq!(telegram_hb.show_ok, Some(true));
+    }
+
+    #[test]
+    fn custom_provider_agents_require_known_provider_id() {
+        let toml = r#"
+[custom_providers.ops]
+name = "Ops"
+harness = "openai"
+base_url = "https://example.com/v1"
+api_key = "secret"
+
+[agents.default]
+name = "Default"
+provider = "custom"
+model = "ops-model"
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("agents.default.provider_id is required"));
+
+        let toml = r#"
+[custom_providers.ops]
+name = "Ops"
+harness = "openai"
+base_url = "https://example.com/v1"
+api_key = "secret"
+
+[agents.default]
+name = "Default"
+provider = "custom"
+provider_id = "missing"
+model = "ops-model"
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("unknown custom provider"));
+    }
+
+    #[test]
+    fn invalid_agent_heartbeat_duration_is_rejected() {
+        let toml = r#"
+[agents.default]
+name = "Default"
+model = "claude-sonnet-4-6"
+
+[agents.default.heartbeat]
+every = "soon"
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("agents.default.heartbeat.every"));
+    }
+
+    #[test]
+    fn heartbeat_active_hours_require_both_bounds() {
+        let toml = r#"
+[agents.default]
+name = "Default"
+model = "claude-sonnet-4-6"
+
+[agents.default.heartbeat]
+every = "30m"
+
+[agents.default.heartbeat.active_hours]
+start = "09:00"
+end = ""
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("active_hours requires both start and end"));
     }
 
     #[test]

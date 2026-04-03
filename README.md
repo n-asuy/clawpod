@@ -162,8 +162,43 @@ clawpod enqueue --channel ... --message ...  # Manually enqueue a message
 clawpod service install|start|stop|status    # Manage background service
 clawpod doctor                  # Run diagnostics
 clawpod reset --agent <id>      # Reset agent workspace/session
+clawpod agent list|show|add|edit|remove      # Manage agents
+clawpod team list|show|add-agent|remove-agent|set-leader
+clawpod binding list|show|add|update|remove
+clawpod access list|allow-channel|deny-channel|remove-channel
 clawpod version                 # Print version
 ```
+
+Examples:
+
+```bash
+clawpod agent add researcher \
+  --provider openai \
+  --model gpt-5 \
+  --browser-profile research \
+  --prompt-file prompts/research.md \
+  --heartbeat-every 30m \
+  --heartbeat-target discord \
+  --heartbeat-to 1486343914892820500
+
+clawpod agent edit researcher \
+  --system-prompt "Stay concise. Escalate blockers early." \
+  --heartbeat-direct-policy block \
+  --heartbeat-isolated-session false
+
+clawpod team add-agent dev reviewer
+clawpod binding add --agent researcher --channel discord --peer-id 1486343914892820500
+clawpod access allow-channel --channel discord 1486343914892820500 --require-mention false
+clawpod agent remove reviewer --archive-workspace
+```
+
+When you administer a remote system over SSH, point the CLI at the same config file the service uses. For a systemd service running as `clawpod`, that usually means:
+
+```bash
+sudo -u clawpod -H clawpod --config /home/clawpod/.clawpod/clawpod.toml agent list
+```
+
+`clawpod doctor` and `clawpod status` warn when the current CLI config path differs from the runtime home or detected systemd unit.
 
 ## Routing
 
@@ -229,9 +264,10 @@ Key endpoints:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
-| `/api/tasks` | GET | Run history |
+| `/api/runs` | GET | Run history |
 | `/api/agents` | GET | Agent definitions |
 | `/api/teams` | GET | Team definitions |
+| `/api/bindings` | GET | Binding rules |
 | `/api/queue/status` | GET | Queue state |
 | `/api/settings` | GET/PUT | Runtime config |
 | `/api/responses` | GET/POST | Pending responses / manual reply |
@@ -239,17 +275,7 @@ Key endpoints:
 | `/api/events/stream` | GET | SSE live event stream |
 | `/api/chatroom/:team_id` | GET/POST | Team chatroom |
 | `/api/logs/events` | GET | Event log |
-| `/api/sender-access` | GET | Pairing/approval status |
-
-Authentication (when enabled):
-
-```toml
-[server.auth]
-enabled = true
-token_env = "CLAWPOD_OFFICE_TOKEN"
-```
-
-Token via `Authorization: Bearer <token>` header or `?token=...` query param.
+| `/api/access/senders` | GET | Pairing / sender approval status |
 
 ## Providers
 
