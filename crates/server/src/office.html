@@ -314,6 +314,44 @@ tr:hover td { background: var(--bg-hover); }
 .form-input:focus, .form-select:focus, .form-textarea:focus { border-color: var(--accent); }
 .form-textarea { resize: vertical; min-height: 60px; }
 
+.settings-layout { display: flex; flex-direction: column; gap: 16px; }
+.settings-inline-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.settings-subsection {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.settings-subsection + .settings-subsection { margin-top: 12px; }
+.settings-subtitle {
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.settings-help {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.settings-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.settings-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 /* Dialog / Modal */
 .modal-overlay {
   position: fixed;
@@ -2362,31 +2400,991 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
   };
 
   /* Settings */
-  async function renderSettings(el) {
-    const data = await GET('/api/settings');
-    const config = data.config || {};
+  let settingsEditorState = null;
 
-    el.innerHTML = `
-      <div class="card">
-        <div class="card-header">
-          <span>Runtime Configuration</span>
-          <span class="mono text-dim" style="font-weight:400;font-size:12px">${escapeHtml(data.config_path || '')}</span>
+  function settingsDeepClone(value) {
+    return JSON.parse(JSON.stringify(value || {}));
+  }
+
+  function settingsConfig() {
+    return settingsEditorState?.config || {};
+  }
+
+  function ensureSettingsConfigShape() {
+    const config = settingsConfig();
+    config.browser = config.browser || {};
+    config.browser.profiles = config.browser.profiles || {};
+    config.custom_providers = config.custom_providers || {};
+    config.channels = config.channels || {};
+    return config;
+  }
+
+  function settingsValue(id) {
+    return document.getElementById(id)?.value ?? '';
+  }
+
+  function settingsTrimmedValue(id) {
+    return settingsValue(id).trim();
+  }
+
+  function settingsChecked(id) {
+    return !!document.getElementById(id)?.checked;
+  }
+
+  function settingsOptionalString(id) {
+    const value = settingsTrimmedValue(id);
+    return value ? value : null;
+  }
+
+  function settingsRequiredString(id, label) {
+    const value = settingsTrimmedValue(id);
+    if (!value) throw new Error(`${label} is required`);
+    return value;
+  }
+
+  function settingsRequiredInteger(id, label, min = 0, max = null) {
+    const raw = settingsTrimmedValue(id);
+    if (!raw) throw new Error(`${label} is required`);
+    const value = Number(raw);
+    if (!Number.isInteger(value)) {
+      throw new Error(`${label} must be an integer`);
+    }
+    if (value < min || (max != null && value > max)) {
+      if (max != null) {
+        throw new Error(`${label} must be between ${min} and ${max}`);
+      }
+      throw new Error(`${label} must be at least ${min}`);
+    }
+    return value;
+  }
+
+  function settingsOptionalInteger(id, label, min = 0, max = null) {
+    const raw = settingsTrimmedValue(id);
+    if (!raw) return null;
+    const value = Number(raw);
+    if (!Number.isInteger(value)) {
+      throw new Error(`${label} must be an integer`);
+    }
+    if (value < min || (max != null && value > max)) {
+      if (max != null) {
+        throw new Error(`${label} must be between ${min} and ${max}`);
+      }
+      throw new Error(`${label} must be at least ${min}`);
+    }
+    return value;
+  }
+
+  function settingsListValue(id) {
+    return settingsValue(id)
+      .split(/\r?\n|,/)
+      .map(value => value.trim())
+      .filter(Boolean);
+  }
+
+  function settingsToggleBlock(toggleId, blockId) {
+    const block = document.getElementById(blockId);
+    if (block) block.style.display = settingsChecked(toggleId) ? '' : 'none';
+  }
+
+  function settingsBindToggle(toggleId, blockId) {
+    const toggle = document.getElementById(toggleId);
+    if (!toggle) return;
+    toggle.addEventListener('change', () => settingsToggleBlock(toggleId, blockId));
+    settingsToggleBlock(toggleId, blockId);
+  }
+
+  function settingsCurrentBrowserDefaultProfile() {
+    const input = document.getElementById('settings-browser-default-profile');
+    if (input) return input.value.trim();
+    return settingsConfig().browser?.default_profile || '';
+  }
+
+  function settingsAssignedAgentsForBrowserProfile(profileName) {
+    const agents = Object.entries(settingsConfig().agents || {});
+    return agents
+      .filter(([, agent]) => agent.browser?.profile === profileName)
+      .map(([agentId]) => agentId)
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  function settingsAssignedAgentsForProvider(providerId) {
+    const agents = Object.entries(settingsConfig().agents || {});
+    return agents
+      .filter(([, agent]) => agent.provider === 'custom' && agent.provider_id === providerId)
+      .map(([agentId]) => agentId)
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  function renderSettingsHeartbeatPolicyEditor(prefix, heartbeat, toggleLabel) {
+    const hb = heartbeat || {};
+    const active = hb.active_hours || {};
+    const enabled = !!heartbeat;
+    return `
+      <div class="form-row">
+        <label style="display:inline-flex;align-items:center;gap:8px">
+          <input type="checkbox" id="${prefix}-enabled" ${enabled ? 'checked' : ''}>
+          <span class="text-dim">${escapeHtml(toggleLabel)}</span>
+        </label>
+      </div>
+      <div id="${prefix}-fields" style="display:${enabled ? '' : 'none'}">
+        <div class="settings-inline-grid">
+          <div class="form-row"><label class="form-label">Every</label><input class="form-input" id="${prefix}-every" value="${escapeHtml(hb.every || '')}" placeholder="30m"></div>
+          <div class="form-row"><label class="form-label">Model</label><input class="form-input" id="${prefix}-model" value="${escapeHtml(hb.model || '')}" placeholder="optional"></div>
+          <div class="form-row"><label class="form-label">Target</label>
+            <select class="form-select" id="${prefix}-target">
+              ${[['','Inherit'],['none','None'],['last','Last'],['telegram','Telegram'],['discord','Discord'],['slack','Slack'],['chatroom','Chatroom']].map(([value, label]) => `<option value="${value}" ${value === (hb.target || '') ? 'selected' : ''}>${label}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-row"><label class="form-label">To</label><input class="form-input" id="${prefix}-to" value="${escapeHtml(hb.to || '')}" placeholder="recipient or channel id"></div>
+          <div class="form-row"><label class="form-label">Account ID</label><input class="form-input" id="${prefix}-account-id" value="${escapeHtml(hb.account_id || '')}" placeholder="optional"></div>
+          <div class="form-row"><label class="form-label">Ack Max Chars</label><input class="form-input" id="${prefix}-ack-max-chars" type="number" min="1" value="${hb.ack_max_chars || ''}" placeholder="300"></div>
+          <div class="form-row"><label class="form-label">Direct Policy</label>
+            <select class="form-select" id="${prefix}-direct-policy">
+              ${[['','Inherit'],['allow','Allow'],['block','Block']].map(([value, label]) => `<option value="${value}" ${value === (hb.direct_policy || '') ? 'selected' : ''}>${label}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-row"><label class="form-label">Include Reasoning</label><select class="form-select" id="${prefix}-include-reasoning">${triStateBoolOptions(hb.include_reasoning)}</select></div>
+          <div class="form-row"><label class="form-label">Light Context</label><select class="form-select" id="${prefix}-light-context">${triStateBoolOptions(hb.light_context)}</select></div>
+          <div class="form-row"><label class="form-label">Isolated Session</label><select class="form-select" id="${prefix}-isolated-session">${triStateBoolOptions(hb.isolated_session)}</select></div>
+          <div class="form-row"><label class="form-label">Active Start</label><input class="form-input" id="${prefix}-active-start" value="${escapeHtml(active.start || '')}" placeholder="09:00"></div>
+          <div class="form-row"><label class="form-label">Active End</label><input class="form-input" id="${prefix}-active-end" value="${escapeHtml(active.end || '')}" placeholder="18:00"></div>
+          <div class="form-row"><label class="form-label">Active Timezone</label><input class="form-input" id="${prefix}-active-timezone" value="${escapeHtml(active.timezone || '')}" placeholder="UTC"></div>
         </div>
+        <div class="form-row"><label class="form-label">Prompt</label><textarea class="form-textarea" id="${prefix}-prompt" style="min-height:90px">${escapeHtml(hb.prompt || '')}</textarea></div>
+      </div>`;
+  }
+
+  function settingsCollectHeartbeatPolicy(prefix, label) {
+    if (!settingsChecked(`${prefix}-enabled`)) return null;
+    const heartbeat = {};
+    const every = settingsOptionalString(`${prefix}-every`);
+    if (every) heartbeat.every = every;
+    const model = settingsOptionalString(`${prefix}-model`);
+    if (model) heartbeat.model = model;
+    const target = settingsOptionalString(`${prefix}-target`);
+    if (target) heartbeat.target = target;
+    const to = settingsOptionalString(`${prefix}-to`);
+    if (to) heartbeat.to = to;
+    const accountId = settingsOptionalString(`${prefix}-account-id`);
+    if (accountId) heartbeat.account_id = accountId;
+    const ackMaxChars = settingsOptionalInteger(`${prefix}-ack-max-chars`, `${label} ack max chars`, 1);
+    if (ackMaxChars != null) heartbeat.ack_max_chars = ackMaxChars;
+    const directPolicy = settingsOptionalString(`${prefix}-direct-policy`);
+    if (directPolicy) heartbeat.direct_policy = directPolicy;
+    const includeReasoning = readTriStateBool(`${prefix}-include-reasoning`);
+    if (includeReasoning !== null) heartbeat.include_reasoning = includeReasoning;
+    const lightContext = readTriStateBool(`${prefix}-light-context`);
+    if (lightContext !== null) heartbeat.light_context = lightContext;
+    const isolatedSession = readTriStateBool(`${prefix}-isolated-session`);
+    if (isolatedSession !== null) heartbeat.isolated_session = isolatedSession;
+    const prompt = settingsValue(`${prefix}-prompt`);
+    if (prompt.trim()) heartbeat.prompt = prompt;
+    const activeStart = settingsOptionalString(`${prefix}-active-start`);
+    const activeEnd = settingsOptionalString(`${prefix}-active-end`);
+    const activeTimezone = settingsOptionalString(`${prefix}-active-timezone`);
+    if (activeStart || activeEnd || activeTimezone) {
+      if (!activeStart || !activeEnd) {
+        throw new Error(`${label} active hours require both start and end`);
+      }
+      heartbeat.active_hours = { start: activeStart, end: activeEnd };
+      if (activeTimezone) heartbeat.active_hours.timezone = activeTimezone;
+    }
+    if (!Object.keys(heartbeat).length) {
+      throw new Error(`Set at least one value for ${label} or disable that section`);
+    }
+    return heartbeat;
+  }
+
+  function renderSettingsChannelHeartbeatEditor(prefix, heartbeat, toggleLabel) {
+    const hb = heartbeat || {};
+    const enabled = !!heartbeat;
+    return `
+      <div class="form-row">
+        <label style="display:inline-flex;align-items:center;gap:8px">
+          <input type="checkbox" id="${prefix}-heartbeat-enabled" ${enabled ? 'checked' : ''}>
+          <span class="text-dim">${escapeHtml(toggleLabel)}</span>
+        </label>
+      </div>
+      <div id="${prefix}-heartbeat-fields" style="display:${enabled ? '' : 'none'}">
+        <div class="settings-inline-grid">
+          <div class="form-row"><label class="form-label">Show OK</label><select class="form-select" id="${prefix}-heartbeat-show-ok">${triStateBoolOptions(hb.show_ok)}</select></div>
+          <div class="form-row"><label class="form-label">Show Alerts</label><select class="form-select" id="${prefix}-heartbeat-show-alerts">${triStateBoolOptions(hb.show_alerts)}</select></div>
+          <div class="form-row"><label class="form-label">Use Indicator</label><select class="form-select" id="${prefix}-heartbeat-use-indicator">${triStateBoolOptions(hb.use_indicator)}</select></div>
+        </div>
+      </div>`;
+  }
+
+  function settingsCollectChannelHeartbeat(prefix, label) {
+    if (!settingsChecked(`${prefix}-heartbeat-enabled`)) return null;
+    const heartbeat = {};
+    const showOk = readTriStateBool(`${prefix}-heartbeat-show-ok`);
+    const showAlerts = readTriStateBool(`${prefix}-heartbeat-show-alerts`);
+    const useIndicator = readTriStateBool(`${prefix}-heartbeat-use-indicator`);
+    if (showOk !== null) heartbeat.show_ok = showOk;
+    if (showAlerts !== null) heartbeat.show_alerts = showAlerts;
+    if (useIndicator !== null) heartbeat.use_indicator = useIndicator;
+    if (!Object.keys(heartbeat).length) {
+      throw new Error(`Set at least one heartbeat visibility value for ${label} or disable that section`);
+    }
+    return heartbeat;
+  }
+
+  function settingsEffectiveChannelAccess(channelKey, channelConfig) {
+    const access = channelConfig?.access;
+    if (access) return access;
+    if (channelKey === 'discord') {
+      return {
+        dm_policy: 'open',
+        group_policy: channelConfig?.mention_only ? 'mention_only' : 'open',
+        allow_from: [],
+        group_allow_from: [],
+        channels: {},
+      };
+    }
+    return {
+      dm_policy: 'open',
+      group_policy: 'mention_only',
+      allow_from: [],
+      group_allow_from: [],
+      channels: {},
+    };
+  }
+
+  function renderSettingsChannelCard(channelKey, label, channelConfig) {
+    const channel = channelConfig || {};
+    const enabled = !!channelConfig;
+    const accessEnabled = !!channel.access;
+    const access = settingsEffectiveChannelAccess(channelKey, channelConfig);
+    const overrideCount = Object.keys(channel.access?.channels || {}).length;
+    const extraFields = channelKey === 'discord'
+      ? `
+        <div class="settings-inline-grid">
+          <div class="form-row"><label class="form-label">Guild ID</label><input class="form-input" id="settings-channel-${channelKey}-guild-id" value="${escapeHtml(channel.guild_id || '')}" placeholder="optional"></div>
+          <div class="form-row">
+            <label class="form-label" for="settings-channel-${channelKey}-mention-only">Mention Only</label>
+            <label style="display:inline-flex;align-items:center;gap:8px">
+              <input type="checkbox" id="settings-channel-${channelKey}-mention-only" ${channel.mention_only ? 'checked' : ''}>
+              <span class="text-dim">Implicit group default becomes mention-only when access override is off</span>
+            </label>
+          </div>
+        </div>`
+      : channelKey === 'slack'
+        ? `
+          <div class="settings-inline-grid">
+            <div class="form-row"><label class="form-label">App Token</label><input class="form-input" id="settings-channel-${channelKey}-app-token" value="${escapeHtml(channel.app_token || '')}" placeholder="xapp-... or masked"></div>
+            <div class="form-row"><label class="form-label">App Token Env</label><input class="form-input" id="settings-channel-${channelKey}-app-token-env" value="${escapeHtml(channel.app_token_env || '')}" placeholder="SLACK_APP_TOKEN"></div>
+          </div>`
+        : '';
+
+    return `
+      <div class="card">
+        <div class="card-header">${escapeHtml(label)}</div>
         <div class="card-body">
-          <textarea class="form-textarea" id="settings-json" style="min-height:400px;font-family:'SF Mono','Menlo',monospace;font-size:12px">${escapeHtml(JSON.stringify(config, null, 2))}</textarea>
-          <div style="margin-top:12px;display:flex;justify-content:flex-end;gap:8px">
-            ${data.runtime?.restart_supported ? '<button class="btn" onclick="restartRuntime()">Restart Runtime</button>' : ''}
-            <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+          <div class="form-row">
+            <label style="display:inline-flex;align-items:center;gap:8px">
+              <input type="checkbox" id="settings-channel-${channelKey}-enabled" ${enabled ? 'checked' : ''}>
+              <span class="text-dim">Include ${escapeHtml(label)} config in the saved file</span>
+            </label>
+          </div>
+          <div id="settings-channel-${channelKey}-fields" style="display:${enabled ? '' : 'none'}">
+            <div class="settings-subsection">
+              <div class="settings-subtitle">Connection</div>
+              <div class="settings-inline-grid">
+                <div class="form-row"><label class="form-label">Bot Token</label><input class="form-input" id="settings-channel-${channelKey}-bot-token" value="${escapeHtml(channel.bot_token || '')}" placeholder="secret or masked"></div>
+                <div class="form-row"><label class="form-label">Bot Token Env</label><input class="form-input" id="settings-channel-${channelKey}-bot-token-env" value="${escapeHtml(channel.bot_token_env || '')}" placeholder="${channelKey.toUpperCase()}_BOT_TOKEN"></div>
+              </div>
+              ${extraFields}
+            </div>
+            <div class="settings-subsection">
+              <div class="settings-subtitle">Access Policy</div>
+              <div class="settings-help" style="margin-bottom:12px">Per-channel overrides configured on the Access page are preserved here.${overrideCount ? ` ${overrideCount} override(s) currently exist.` : ''}</div>
+              <div class="form-row">
+                <label style="display:inline-flex;align-items:center;gap:8px">
+                  <input type="checkbox" id="settings-channel-${channelKey}-access-enabled" ${accessEnabled ? 'checked' : ''}>
+                  <span class="text-dim">Store explicit access policy for ${escapeHtml(label)}</span>
+                </label>
+              </div>
+              <div id="settings-channel-${channelKey}-access-fields" style="display:${accessEnabled ? '' : 'none'}">
+                <div class="settings-inline-grid">
+                  <div class="form-row"><label class="form-label">DM Policy</label>
+                    <select class="form-select" id="settings-channel-${channelKey}-dm-policy">
+                      ${['open','allowlist','pairing','disabled'].map(value => `<option value="${value}" ${value === (access.dm_policy || 'open') ? 'selected' : ''}>${value}</option>`).join('')}
+                    </select>
+                  </div>
+                  <div class="form-row"><label class="form-label">Group Policy</label>
+                    <select class="form-select" id="settings-channel-${channelKey}-group-policy">
+                      ${['disabled','mention_only','allowlist','open'].map(value => `<option value="${value}" ${value === (access.group_policy || 'disabled') ? 'selected' : ''}>${value}</option>`).join('')}
+                    </select>
+                  </div>
+                  <div class="form-row"><label class="form-label">Allow From (DM)</label><textarea class="form-textarea" id="settings-channel-${channelKey}-allow-from" style="min-height:90px" placeholder="one sender id per line">${escapeHtml((access.allow_from || []).join('\n'))}</textarea></div>
+                  <div class="form-row"><label class="form-label">Group Allow From</label><textarea class="form-textarea" id="settings-channel-${channelKey}-group-allow-from" style="min-height:90px" placeholder="one sender id per line">${escapeHtml((access.group_allow_from || []).join('\n'))}</textarea></div>
+                </div>
+              </div>
+            </div>
+            <div class="settings-subsection">
+              <div class="settings-subtitle">Heartbeat Visibility</div>
+              ${renderSettingsChannelHeartbeatEditor(`settings-channel-${channelKey}`, channel.heartbeat, `Override heartbeat visibility for ${label}`)}
+            </div>
           </div>
         </div>
       </div>`;
   }
 
+  function settingsCollectChannelAccess(channelKey, previousConfig) {
+    const previousChannels = previousConfig?.access?.channels || {};
+    const accessEnabled = settingsChecked(`settings-channel-${channelKey}-access-enabled`);
+    if (!accessEnabled && !Object.keys(previousChannels).length) return null;
+
+    const access = settingsEffectiveChannelAccess(channelKey, previousConfig);
+    const next = {
+      dm_policy: accessEnabled ? settingsRequiredString(`settings-channel-${channelKey}-dm-policy`, `${channelKey} DM policy`) : access.dm_policy,
+      group_policy: accessEnabled ? settingsRequiredString(`settings-channel-${channelKey}-group-policy`, `${channelKey} group policy`) : access.group_policy,
+      allow_from: accessEnabled ? settingsListValue(`settings-channel-${channelKey}-allow-from`) : [],
+      group_allow_from: accessEnabled ? settingsListValue(`settings-channel-${channelKey}-group-allow-from`) : [],
+      channels: settingsDeepClone(previousChannels),
+    };
+
+    const hasMeaningful =
+      next.dm_policy !== access.dm_policy ||
+      next.group_policy !== access.group_policy ||
+      next.allow_from.length > 0 ||
+      next.group_allow_from.length > 0 ||
+      Object.keys(next.channels).length > 0;
+
+    return hasMeaningful ? next : null;
+  }
+
+  function settingsCollectChannelConfig(channelKey, previousConfig) {
+    if (!settingsChecked(`settings-channel-${channelKey}-enabled`)) return null;
+
+    const next = settingsDeepClone(previousConfig || {});
+    next.bot_token = settingsOptionalString(`settings-channel-${channelKey}-bot-token`);
+    next.bot_token_env = settingsOptionalString(`settings-channel-${channelKey}-bot-token-env`);
+
+    if (channelKey === 'discord') {
+      next.guild_id = settingsOptionalString(`settings-channel-${channelKey}-guild-id`);
+      next.mention_only = settingsChecked(`settings-channel-${channelKey}-mention-only`);
+    }
+
+    if (channelKey === 'slack') {
+      next.app_token = settingsOptionalString(`settings-channel-${channelKey}-app-token`);
+      next.app_token_env = settingsOptionalString(`settings-channel-${channelKey}-app-token-env`);
+    }
+
+    const access = settingsCollectChannelAccess(channelKey, previousConfig);
+    if (access) next.access = access;
+    else delete next.access;
+
+    const heartbeat = settingsCollectChannelHeartbeat(`settings-channel-${channelKey}`, `${channelKey} heartbeat`);
+    if (heartbeat) next.heartbeat = heartbeat;
+    else delete next.heartbeat;
+
+    return next;
+  }
+
+  function renderSettingsBrowserProfilesPanel() {
+    const config = ensureSettingsConfigShape();
+    const defaultProfile = settingsCurrentBrowserDefaultProfile();
+    const profiles = Object.entries(config.browser.profiles || {}).sort(([a], [b]) => a.localeCompare(b));
+    if (!profiles.length) {
+      return '<div class="empty">No browser profiles configured</div>';
+    }
+    return `<div class="table-wrap"><table>
+      <thead><tr><th>Name</th><th>Ports / Display</th><th>Paths</th><th>Assignments</th><th></th></tr></thead>
+      <tbody>
+        ${profiles.map(([name, profile]) => {
+          const assigned = settingsAssignedAgentsForBrowserProfile(name);
+          const viewPath = profile.view_path || `/view/${name}`;
+          return `<tr>
+            <td class="mono">
+              ${escapeHtml(name)}
+              ${defaultProfile === name ? ' <span class="badge badge-blue">default</span>' : ''}
+            </td>
+            <td class="mono text-dim">cdp=${escapeHtml(String(profile.cdp_port))} · kasm=${escapeHtml(String(profile.kasm_port))}<div style="margin-top:4px">${escapeHtml(profile.display || '-')}</div></td>
+            <td class="mono text-dim">${escapeHtml(profile.profile_dir || '')}<div style="margin-top:4px">view ${escapeHtml(viewPath)}</div>${profile.home_dir ? `<div style="margin-top:4px">home ${escapeHtml(profile.home_dir)}</div>` : ''}${profile.driver ? `<div style="margin-top:4px">driver ${escapeHtml(profile.driver)}</div>` : ''}</td>
+            <td>${assigned.length ? assigned.map(agentId => `<span class="badge badge-gray" style="margin-right:4px">${escapeHtml(agentId)}</span>`).join('') : '<span class="text-dim">none</span>'}</td>
+            <td>
+              <div class="btn-group">
+                <button class="btn btn-sm" onclick="showEditBrowserProfileModal('${escapeHtml(name)}')">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteBrowserProfile('${escapeHtml(name)}')">Delete</button>
+              </div>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>`;
+  }
+
+  function refreshSettingsBrowserProfilesPanel() {
+    const panel = document.getElementById('settings-browser-profiles-panel');
+    if (panel) panel.innerHTML = renderSettingsBrowserProfilesPanel();
+  }
+
+  function renderSettingsCustomProvidersPanel() {
+    const config = ensureSettingsConfigShape();
+    const providers = Object.entries(config.custom_providers || {}).sort(([a], [b]) => a.localeCompare(b));
+    if (!providers.length) {
+      return '<div class="empty">No custom providers configured</div>';
+    }
+    return `<div class="table-wrap"><table>
+      <thead><tr><th>ID</th><th>Provider</th><th>Base URL</th><th>Auth / Model</th><th>Assignments</th><th></th></tr></thead>
+      <tbody>
+        ${providers.map(([id, provider]) => {
+          const assigned = settingsAssignedAgentsForProvider(id);
+          const authSummary = provider.api_key_env ? `env:${provider.api_key_env}` : (provider.api_key ? 'inline key' : 'missing');
+          return `<tr>
+            <td class="mono">${escapeHtml(id)}</td>
+            <td>${escapeHtml(provider.name || '')}<div class="mono text-dim" style="margin-top:4px">${escapeHtml(provider.harness || '')}</div></td>
+            <td class="mono text-dim">${escapeHtml(provider.base_url || '')}</td>
+            <td class="text-dim">${escapeHtml(authSummary)}${provider.model ? `<div class="mono text-dim" style="margin-top:4px">${escapeHtml(provider.model)}</div>` : ''}</td>
+            <td>${assigned.length ? assigned.map(agentId => `<span class="badge badge-gray" style="margin-right:4px">${escapeHtml(agentId)}</span>`).join('') : '<span class="text-dim">none</span>'}</td>
+            <td>
+              <div class="btn-group">
+                <button class="btn btn-sm" onclick="showEditCustomProviderModal('${escapeHtml(id)}')">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteCustomProvider('${escapeHtml(id)}')">Delete</button>
+              </div>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>`;
+  }
+
+  function refreshSettingsCustomProvidersPanel() {
+    const panel = document.getElementById('settings-custom-providers-panel');
+    if (panel) panel.innerHTML = renderSettingsCustomProvidersPanel();
+  }
+
+  function bindSettingsToggles() {
+    settingsBindToggle('settings-agent-defaults-heartbeat-enabled', 'settings-agent-defaults-heartbeat-fields');
+    settingsBindToggle('settings-channels-defaults-heartbeat-enabled', 'settings-channels-defaults-heartbeat-fields');
+    ['telegram', 'discord', 'slack'].forEach(channelKey => {
+      settingsBindToggle(`settings-channel-${channelKey}-enabled`, `settings-channel-${channelKey}-fields`);
+      settingsBindToggle(`settings-channel-${channelKey}-access-enabled`, `settings-channel-${channelKey}-access-fields`);
+      settingsBindToggle(`settings-channel-${channelKey}-heartbeat-enabled`, `settings-channel-${channelKey}-heartbeat-fields`);
+    });
+  }
+
+  function buildStructuredSettingsPayload() {
+    const current = ensureSettingsConfigShape();
+    const next = settingsDeepClone(current);
+
+    next.daemon = {
+      home_dir: settingsRequiredString('settings-daemon-home-dir', 'Daemon home directory'),
+      workspace_dir: settingsRequiredString('settings-daemon-workspace-dir', 'Daemon workspace directory'),
+      poll_interval_ms: settingsRequiredInteger('settings-daemon-poll-interval-ms', 'Daemon poll interval', 1),
+      max_concurrent_runs: settingsRequiredInteger('settings-daemon-max-concurrent-runs', 'Max concurrent runs', 1),
+    };
+
+    next.server = {
+      enabled: settingsChecked('settings-server-enabled'),
+      api_port: settingsRequiredInteger('settings-server-api-port', 'Server API port', 1, 65535),
+      host: settingsRequiredString('settings-server-host', 'Server host'),
+      allow_public_bind: settingsChecked('settings-server-allow-public-bind'),
+    };
+
+    next.queue = {
+      mode: settingsRequiredString('settings-queue-mode', 'Queue mode'),
+      max_retries: settingsRequiredInteger('settings-queue-max-retries', 'Queue max retries', 0),
+      backoff_base_ms: settingsRequiredInteger('settings-queue-backoff-base-ms', 'Queue backoff base', 0),
+      dead_letter_enabled: settingsChecked('settings-queue-dead-letter-enabled'),
+    };
+
+    next.session = {
+      dm_scope: settingsRequiredString('settings-session-dm-scope', 'Session DM scope'),
+      main_key: settingsRequiredString('settings-session-main-key', 'Session main key'),
+    };
+
+    next.chain = {
+      max_chain_steps: settingsRequiredInteger('settings-chain-max-chain-steps', 'Max chain steps', 1),
+    };
+
+    next.runner = {
+      default_provider: settingsRequiredString('settings-runner-default-provider', 'Runner default provider'),
+      timeout_sec: settingsRequiredInteger('settings-runner-timeout-sec', 'Runner timeout', 1),
+    };
+
+    next.heartbeat = {
+      enabled: settingsChecked('settings-heartbeat-enabled'),
+      interval_sec: settingsRequiredInteger('settings-heartbeat-interval-sec', 'Heartbeat interval', 1),
+      sender: settingsRequiredString('settings-heartbeat-sender', 'Heartbeat sender'),
+    };
+
+    next.default_team = settingsOptionalString('settings-default-team');
+
+    const agentDefaultsHeartbeat = settingsCollectHeartbeatPolicy('settings-agent-defaults-heartbeat', 'agent default heartbeat');
+    next.agent_defaults = agentDefaultsHeartbeat ? { heartbeat: agentDefaultsHeartbeat } : null;
+
+    next.browser = next.browser || {};
+    next.browser.default_profile = settingsOptionalString('settings-browser-default-profile');
+    next.browser.profiles = settingsDeepClone(current.browser?.profiles || {});
+
+    next.custom_providers = settingsDeepClone(current.custom_providers || {});
+
+    next.channels = next.channels || {};
+    const channelDefaultsHeartbeat = settingsCollectChannelHeartbeat('settings-channels-defaults', 'channel default heartbeat');
+    next.channels.defaults = channelDefaultsHeartbeat ? { heartbeat: channelDefaultsHeartbeat } : null;
+    next.channels.telegram = settingsCollectChannelConfig('telegram', current.channels?.telegram);
+    next.channels.discord = settingsCollectChannelConfig('discord', current.channels?.discord);
+    next.channels.slack = settingsCollectChannelConfig('slack', current.channels?.slack);
+
+    next.pairing = {
+      code_length: settingsRequiredInteger('settings-pairing-code-length', 'Pairing code length', 1),
+      code_ttl_secs: settingsRequiredInteger('settings-pairing-code-ttl-secs', 'Pairing code TTL', 1),
+      max_failed_attempts: settingsRequiredInteger('settings-pairing-max-failed-attempts', 'Pairing max failed attempts', 1),
+      lockout_secs: settingsRequiredInteger('settings-pairing-lockout-secs', 'Pairing lockout seconds', 1),
+    };
+
+    return next;
+  }
+
+  function renderBrowserProfileModal(profileName, profile) {
+    const p = profile || {};
+    const isEditing = !!profileName;
+    const currentName = profileName || '';
+    return `
+      <input type="hidden" id="settings-browser-profile-existing-name" value="${escapeHtml(currentName)}">
+      <div class="form-row"><label class="form-label">Profile Name</label><input class="form-input" id="settings-browser-profile-name" value="${escapeHtml(currentName)}" placeholder="reviewer"></div>
+      <div class="settings-inline-grid">
+        <div class="form-row"><label class="form-label">CDP Port</label><input class="form-input" id="settings-browser-profile-cdp-port" type="number" min="1" max="65535" value="${p.cdp_port || ''}" placeholder="9222"></div>
+        <div class="form-row"><label class="form-label">Kasm Port</label><input class="form-input" id="settings-browser-profile-kasm-port" type="number" min="1" max="65535" value="${p.kasm_port || ''}" placeholder="6901"></div>
+        <div class="form-row"><label class="form-label">Display</label><input class="form-input" id="settings-browser-profile-display" value="${escapeHtml(p.display || '')}" placeholder=":11"></div>
+      </div>
+      <div class="form-row"><label class="form-label">Profile Dir</label><input class="form-input mono" id="settings-browser-profile-profile-dir" value="${escapeHtml(p.profile_dir || '')}" placeholder="browser/reviewer"></div>
+      <div class="settings-inline-grid">
+        <div class="form-row"><label class="form-label">View Path</label><input class="form-input mono" id="settings-browser-profile-view-path" value="${escapeHtml(p.view_path || '')}" placeholder="/view/reviewer"></div>
+        <div class="form-row"><label class="form-label">Driver</label><input class="form-input" id="settings-browser-profile-driver" value="${escapeHtml(p.driver || '')}" placeholder="optional"></div>
+        <div class="form-row"><label class="form-label">OS User</label><input class="form-input" id="settings-browser-profile-os-user" value="${escapeHtml(p.os_user || '')}" placeholder="optional"></div>
+      </div>
+      <div class="form-row"><label class="form-label">Home Dir</label><input class="form-input mono" id="settings-browser-profile-home-dir" value="${escapeHtml(p.home_dir || '')}" placeholder="optional"></div>
+      ${isEditing ? '<div class="settings-help">Renaming a profile also rewrites agent assignments and the current default profile draft.</div>' : ''}`;
+  }
+
+  window.showCreateBrowserProfileModal = function() {
+    showModal('Add Browser Profile', renderBrowserProfileModal('', null), '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitBrowserProfileModal()">Save</button>');
+  };
+
+  window.showEditBrowserProfileModal = function(profileName) {
+    const config = ensureSettingsConfigShape();
+    const profile = config.browser.profiles[profileName];
+    if (!profile) {
+      toast(`Browser profile not found: ${profileName}`, 'error');
+      return;
+    }
+    showModal(`Edit Browser Profile: ${profileName}`, renderBrowserProfileModal(profileName, profile), '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitBrowserProfileModal()">Save</button>');
+  };
+
+  window.submitBrowserProfileModal = function() {
+    try {
+      const config = ensureSettingsConfigShape();
+      const existingName = settingsTrimmedValue('settings-browser-profile-existing-name');
+      const name = settingsRequiredString('settings-browser-profile-name', 'Browser profile name');
+      if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+        throw new Error('Browser profile names may only contain letters, numbers, "_" and "-"');
+      }
+      if (existingName !== name && config.browser.profiles[name]) {
+        throw new Error(`Browser profile already exists: ${name}`);
+      }
+
+      const profile = {
+        cdp_port: settingsRequiredInteger('settings-browser-profile-cdp-port', 'Browser profile CDP port', 1, 65535),
+        profile_dir: settingsRequiredString('settings-browser-profile-profile-dir', 'Browser profile directory'),
+        display: settingsRequiredString('settings-browser-profile-display', 'Browser profile display'),
+        kasm_port: settingsRequiredInteger('settings-browser-profile-kasm-port', 'Browser profile Kasm port', 1, 65535),
+      };
+      const viewPath = settingsOptionalString('settings-browser-profile-view-path');
+      if (viewPath) {
+        if (!viewPath.startsWith('/')) throw new Error('Browser profile view path must start with "/"');
+        profile.view_path = viewPath;
+      }
+      const osUser = settingsOptionalString('settings-browser-profile-os-user');
+      if (osUser) profile.os_user = osUser;
+      const homeDir = settingsOptionalString('settings-browser-profile-home-dir');
+      if (homeDir) profile.home_dir = homeDir;
+      const driver = settingsOptionalString('settings-browser-profile-driver');
+      if (driver) profile.driver = driver;
+
+      if (existingName && existingName !== name) {
+        delete config.browser.profiles[existingName];
+        if (config.browser.default_profile === existingName) config.browser.default_profile = name;
+        Object.values(config.agents || {}).forEach(agent => {
+          if (agent.browser?.profile === existingName) {
+            agent.browser.profile = name;
+          }
+        });
+        if (settingsTrimmedValue('settings-browser-default-profile') === existingName) {
+          document.getElementById('settings-browser-default-profile').value = name;
+        }
+      }
+
+      config.browser.profiles[name] = profile;
+      refreshSettingsBrowserProfilesPanel();
+      closeModal();
+      toast('Browser profile updated in pending settings', 'success');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+
+  window.deleteBrowserProfile = function(profileName) {
+    const config = ensureSettingsConfigShape();
+    const assigned = settingsAssignedAgentsForBrowserProfile(profileName);
+    const wasDefault = config.browser.default_profile === profileName || settingsTrimmedValue('settings-browser-default-profile') === profileName;
+    let message = `Delete browser profile "${profileName}" from the pending settings?`;
+    if (assigned.length || wasDefault) {
+      message += `\n\nThis will clear ${assigned.length ? 'agent assignments' : 'the default profile'} for this profile.`;
+    }
+    if (!confirm(message)) return;
+
+    delete config.browser.profiles[profileName];
+    if (config.browser.default_profile === profileName) config.browser.default_profile = null;
+    if (settingsTrimmedValue('settings-browser-default-profile') === profileName) {
+      document.getElementById('settings-browser-default-profile').value = '';
+    }
+    Object.values(config.agents || {}).forEach(agent => {
+      if (agent.browser?.profile === profileName) {
+        delete agent.browser.profile;
+        if (!Object.keys(agent.browser).length) delete agent.browser;
+      }
+    });
+    refreshSettingsBrowserProfilesPanel();
+    toast('Browser profile removed from pending settings', 'success');
+  };
+
+  function renderCustomProviderModal(providerId, provider) {
+    const p = provider || {};
+    return `
+      <input type="hidden" id="settings-custom-provider-existing-id" value="${escapeHtml(providerId || '')}">
+      <div class="form-row"><label class="form-label">Provider ID</label><input class="form-input" id="settings-custom-provider-id" value="${escapeHtml(providerId || '')}" placeholder="ops"></div>
+      <div class="settings-inline-grid">
+        <div class="form-row"><label class="form-label">Name</label><input class="form-input" id="settings-custom-provider-name" value="${escapeHtml(p.name || '')}" placeholder="Operations Gateway"></div>
+        <div class="form-row"><label class="form-label">Harness</label>
+          <select class="form-select" id="settings-custom-provider-harness">
+            ${['anthropic', 'openai'].map(value => `<option value="${value}" ${value === (p.harness || 'openai') ? 'selected' : ''}>${value}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-row"><label class="form-label">Base URL</label><input class="form-input mono" id="settings-custom-provider-base-url" value="${escapeHtml(p.base_url || '')}" placeholder="https://api.example.com/v1"></div>
+      <div class="settings-inline-grid">
+        <div class="form-row"><label class="form-label">API Key</label><input class="form-input" id="settings-custom-provider-api-key" value="${escapeHtml(p.api_key || '')}" placeholder="secret or masked"></div>
+        <div class="form-row"><label class="form-label">API Key Env</label><input class="form-input" id="settings-custom-provider-api-key-env" value="${escapeHtml(p.api_key_env || '')}" placeholder="CUSTOM_API_KEY"></div>
+        <div class="form-row"><label class="form-label">Default Model</label><input class="form-input" id="settings-custom-provider-model" value="${escapeHtml(p.model || '')}" placeholder="optional"></div>
+      </div>`;
+  }
+
+  window.showCreateCustomProviderModal = function() {
+    showModal('Add Custom Provider', renderCustomProviderModal('', null), '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitCustomProviderModal()">Save</button>');
+  };
+
+  window.showEditCustomProviderModal = function(providerId) {
+    const config = ensureSettingsConfigShape();
+    const provider = config.custom_providers[providerId];
+    if (!provider) {
+      toast(`Custom provider not found: ${providerId}`, 'error');
+      return;
+    }
+    showModal(`Edit Custom Provider: ${providerId}`, renderCustomProviderModal(providerId, provider), '<button class="btn" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="submitCustomProviderModal()">Save</button>');
+  };
+
+  window.submitCustomProviderModal = function() {
+    try {
+      const config = ensureSettingsConfigShape();
+      const existingId = settingsTrimmedValue('settings-custom-provider-existing-id');
+      const providerId = settingsRequiredString('settings-custom-provider-id', 'Custom provider ID');
+      if (!/^[A-Za-z0-9_-]+$/.test(providerId)) {
+        throw new Error('Custom provider IDs may only contain letters, numbers, "_" and "-"');
+      }
+      if (existingId !== providerId && config.custom_providers[providerId]) {
+        throw new Error(`Custom provider already exists: ${providerId}`);
+      }
+      const provider = {
+        name: settingsRequiredString('settings-custom-provider-name', 'Custom provider name'),
+        harness: settingsRequiredString('settings-custom-provider-harness', 'Custom provider harness'),
+        base_url: settingsRequiredString('settings-custom-provider-base-url', 'Custom provider base URL'),
+      };
+      const apiKey = settingsOptionalString('settings-custom-provider-api-key');
+      const apiKeyEnv = settingsOptionalString('settings-custom-provider-api-key-env');
+      if (!apiKey && !apiKeyEnv) {
+        throw new Error('Custom providers require an API key or API key env name');
+      }
+      if (apiKey) provider.api_key = apiKey;
+      if (apiKeyEnv) provider.api_key_env = apiKeyEnv;
+      const model = settingsOptionalString('settings-custom-provider-model');
+      if (model) provider.model = model;
+
+      if (existingId && existingId !== providerId) {
+        delete config.custom_providers[existingId];
+        Object.values(config.agents || {}).forEach(agent => {
+          if (agent.provider === 'custom' && agent.provider_id === existingId) {
+            agent.provider_id = providerId;
+          }
+        });
+      }
+
+      config.custom_providers[providerId] = provider;
+      refreshSettingsCustomProvidersPanel();
+      closeModal();
+      toast('Custom provider updated in pending settings', 'success');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+
+  window.deleteCustomProvider = function(providerId) {
+    const config = ensureSettingsConfigShape();
+    const assigned = settingsAssignedAgentsForProvider(providerId);
+    if (assigned.length) {
+      toast(`Cannot delete ${providerId}; it is assigned to ${assigned.join(', ')}`, 'error');
+      return;
+    }
+    if (!confirm(`Delete custom provider "${providerId}" from the pending settings?`)) return;
+    delete config.custom_providers[providerId];
+    refreshSettingsCustomProvidersPanel();
+    toast('Custom provider removed from pending settings', 'success');
+  };
+
+  async function renderSettings(el) {
+    const data = await GET('/api/settings');
+    settingsEditorState = {
+      config: settingsDeepClone(data.config || {}),
+      configPath: data.config_path || '',
+      runtime: data.runtime || {},
+    };
+    const config = ensureSettingsConfigShape();
+    const daemon = config.daemon || {};
+    const server = config.server || {};
+    const queue = config.queue || {};
+    const session = config.session || {};
+    const chain = config.chain || {};
+    const runner = config.runner || {};
+    const heartbeat = config.heartbeat || {};
+    const pairing = config.pairing || {};
+    const teams = Object.keys(config.teams || {}).sort((a, b) => a.localeCompare(b));
+
+    $('#header-actions').innerHTML = `
+      ${data.runtime?.restart_supported ? '<button class="btn btn-sm" onclick="restartRuntime()">Restart Runtime</button>' : ''}
+      <button class="btn btn-primary btn-sm" onclick="saveSettings()">Save Settings</button>`;
+
+    el.innerHTML = `
+      <div class="settings-layout">
+        <div class="card">
+          <div class="card-header">
+            <span>Runtime Configuration</span>
+            <span class="mono text-dim" style="font-weight:400;font-size:12px">${escapeHtml(settingsEditorState.configPath)}</span>
+          </div>
+          <div class="card-body">
+            <div class="settings-help">Structured editor for the runtime config. Save writes back to the same <code>clawpod.toml</code>; most changes still need a runtime restart to take full effect.</div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">Daemon & Server</div>
+            <div class="card-body">
+              <div class="settings-subsection">
+                <div class="settings-subtitle">Daemon</div>
+                <div class="settings-inline-grid">
+                  <div class="form-row"><label class="form-label">Home Dir</label><input class="form-input mono" id="settings-daemon-home-dir" value="${escapeHtml(daemon.home_dir || '')}"></div>
+                  <div class="form-row"><label class="form-label">Workspace Dir</label><input class="form-input mono" id="settings-daemon-workspace-dir" value="${escapeHtml(daemon.workspace_dir || '')}"></div>
+                  <div class="form-row"><label class="form-label">Poll Interval (ms)</label><input class="form-input" id="settings-daemon-poll-interval-ms" type="number" min="1" value="${daemon.poll_interval_ms || ''}"></div>
+                  <div class="form-row"><label class="form-label">Max Concurrent Runs</label><input class="form-input" id="settings-daemon-max-concurrent-runs" type="number" min="1" value="${daemon.max_concurrent_runs || ''}"></div>
+                </div>
+              </div>
+              <div class="settings-subsection">
+                <div class="settings-subtitle">Server</div>
+                <div class="settings-inline-grid">
+                  <div class="form-row"><label class="form-label">Host</label><input class="form-input" id="settings-server-host" value="${escapeHtml(server.host || '')}" placeholder="127.0.0.1"></div>
+                  <div class="form-row"><label class="form-label">API Port</label><input class="form-input" id="settings-server-api-port" type="number" min="1" max="65535" value="${server.api_port || ''}"></div>
+                  <div class="form-row">
+                    <label class="form-label" for="settings-server-enabled">Enabled</label>
+                    <label style="display:inline-flex;align-items:center;gap:8px">
+                      <input type="checkbox" id="settings-server-enabled" ${server.enabled ? 'checked' : ''}>
+                      <span class="text-dim">Start Office server with the daemon</span>
+                    </label>
+                  </div>
+                  <div class="form-row">
+                    <label class="form-label" for="settings-server-allow-public-bind">Allow Public Bind</label>
+                    <label style="display:inline-flex;align-items:center;gap:8px">
+                      <input type="checkbox" id="settings-server-allow-public-bind" ${server.allow_public_bind ? 'checked' : ''}>
+                      <span class="text-dim">Required when binding to a non-local address</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">Queue, Session & Runner</div>
+            <div class="card-body">
+              <div class="settings-subsection">
+                <div class="settings-subtitle">Queue</div>
+                <div class="settings-inline-grid">
+                  <div class="form-row"><label class="form-label">Mode</label>
+                    <select class="form-select" id="settings-queue-mode">
+                      ${['collect','followup','steer','steer-backlog'].map(value => `<option value="${value}" ${value === (queue.mode || 'collect') ? 'selected' : ''}>${value}</option>`).join('')}
+                    </select>
+                  </div>
+                  <div class="form-row"><label class="form-label">Max Retries</label><input class="form-input" id="settings-queue-max-retries" type="number" min="0" value="${queue.max_retries || 0}"></div>
+                  <div class="form-row"><label class="form-label">Backoff Base (ms)</label><input class="form-input" id="settings-queue-backoff-base-ms" type="number" min="0" value="${queue.backoff_base_ms || 0}"></div>
+                  <div class="form-row">
+                    <label class="form-label" for="settings-queue-dead-letter-enabled">Dead Letter</label>
+                    <label style="display:inline-flex;align-items:center;gap:8px">
+                      <input type="checkbox" id="settings-queue-dead-letter-enabled" ${queue.dead_letter_enabled ? 'checked' : ''}>
+                      <span class="text-dim">Store messages that exhaust retries</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div class="settings-subsection">
+                <div class="settings-subtitle">Session & Chain</div>
+                <div class="settings-inline-grid">
+                  <div class="form-row"><label class="form-label">DM Scope</label>
+                    <select class="form-select" id="settings-session-dm-scope">
+                      ${['main','per-peer','per-channel-peer','per-account-channel-peer'].map(value => `<option value="${value}" ${value === (session.dm_scope || 'per-channel-peer') ? 'selected' : ''}>${value}</option>`).join('')}
+                    </select>
+                  </div>
+                  <div class="form-row"><label class="form-label">Main Session Key</label><input class="form-input" id="settings-session-main-key" value="${escapeHtml(session.main_key || '')}" placeholder="main"></div>
+                  <div class="form-row"><label class="form-label">Max Chain Steps</label><input class="form-input" id="settings-chain-max-chain-steps" type="number" min="1" value="${chain.max_chain_steps || ''}"></div>
+                </div>
+              </div>
+              <div class="settings-subsection">
+                <div class="settings-subtitle">Runner</div>
+                <div class="settings-inline-grid">
+                  <div class="form-row"><label class="form-label">Default Provider</label>
+                    <select class="form-select" id="settings-runner-default-provider">
+                      ${['anthropic','openai','custom','mock'].map(value => `<option value="${value}" ${value === (runner.default_provider || 'anthropic') ? 'selected' : ''}>${value}</option>`).join('')}
+                    </select>
+                  </div>
+                  <div class="form-row"><label class="form-label">Timeout (sec)</label><input class="form-input" id="settings-runner-timeout-sec" type="number" min="1" value="${runner.timeout_sec || ''}"></div>
+                  <div class="form-row"><label class="form-label">Default Team</label>
+                    <select class="form-select" id="settings-default-team">
+                      <option value="">None</option>
+                      ${teams.map(teamId => `<option value="${teamId}" ${teamId === (config.default_team || '') ? 'selected' : ''}>${teamId}</option>`).join('')}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">Heartbeat</div>
+            <div class="card-body">
+              <div class="settings-subsection">
+                <div class="settings-subtitle">Global Loop</div>
+                <div class="settings-inline-grid">
+                  <div class="form-row">
+                    <label class="form-label" for="settings-heartbeat-enabled">Enabled</label>
+                    <label style="display:inline-flex;align-items:center;gap:8px">
+                      <input type="checkbox" id="settings-heartbeat-enabled" ${heartbeat.enabled ? 'checked' : ''}>
+                      <span class="text-dim">Master switch for scheduled heartbeats</span>
+                    </label>
+                  </div>
+                  <div class="form-row"><label class="form-label">Interval (sec)</label><input class="form-input" id="settings-heartbeat-interval-sec" type="number" min="1" value="${heartbeat.interval_sec || ''}"></div>
+                  <div class="form-row"><label class="form-label">Sender</label><input class="form-input" id="settings-heartbeat-sender" value="${escapeHtml(heartbeat.sender || '')}" placeholder="Heartbeat"></div>
+                </div>
+              </div>
+              <div class="settings-subsection">
+                <div class="settings-subtitle">Agent Defaults</div>
+                ${renderSettingsHeartbeatPolicyEditor('settings-agent-defaults-heartbeat', config.agent_defaults?.heartbeat, 'Store shared heartbeat defaults for agents')}
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">Pairing</div>
+            <div class="card-body">
+              <div class="settings-inline-grid">
+                <div class="form-row"><label class="form-label">Code Length</label><input class="form-input" id="settings-pairing-code-length" type="number" min="1" value="${pairing.code_length || ''}"></div>
+                <div class="form-row"><label class="form-label">Code TTL (sec)</label><input class="form-input" id="settings-pairing-code-ttl-secs" type="number" min="1" value="${pairing.code_ttl_secs || ''}"></div>
+                <div class="form-row"><label class="form-label">Max Failed Attempts</label><input class="form-input" id="settings-pairing-max-failed-attempts" type="number" min="1" value="${pairing.max_failed_attempts || ''}"></div>
+                <div class="form-row"><label class="form-label">Lockout (sec)</label><input class="form-input" id="settings-pairing-lockout-secs" type="number" min="1" value="${pairing.lockout_secs || ''}"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span>Browser Profiles</span>
+            <button class="btn btn-sm" onclick="showCreateBrowserProfileModal()">+ Add Profile</button>
+          </div>
+          <div class="card-body">
+            <div class="form-row"><label class="form-label">Default Profile</label><input class="form-input" id="settings-browser-default-profile" value="${escapeHtml(config.browser.default_profile || '')}" placeholder="optional" oninput="refreshSettingsBrowserProfilesPanel()"></div>
+            <div class="settings-help" style="margin-bottom:12px">Agents without an explicit browser profile fall back to this profile.</div>
+            <div id="settings-browser-profiles-panel">${renderSettingsBrowserProfilesPanel()}</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span>Custom Providers</span>
+            <button class="btn btn-sm" onclick="showCreateCustomProviderModal()">+ Add Provider</button>
+          </div>
+          <div class="card-body">
+            <div class="settings-help" style="margin-bottom:12px">These provider definitions are referenced by agents with <code>provider = "custom"</code>.</div>
+            <div id="settings-custom-providers-panel">${renderSettingsCustomProvidersPanel()}</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">Channel Defaults</div>
+          <div class="card-body">
+            <div class="settings-help" style="margin-bottom:12px">Only heartbeat visibility defaults are shared across channels. Per-channel access overrides remain on the Access page.</div>
+            ${renderSettingsChannelHeartbeatEditor('settings-channels-defaults', config.channels.defaults?.heartbeat, 'Store default heartbeat visibility for all channels')}
+          </div>
+        </div>
+
+        <div class="grid-2">
+          ${renderSettingsChannelCard('telegram', 'Telegram', config.channels.telegram)}
+          ${renderSettingsChannelCard('discord', 'Discord', config.channels.discord)}
+          ${renderSettingsChannelCard('slack', 'Slack', config.channels.slack)}
+        </div>
+
+        <div class="card">
+          <div class="card-header">Advanced JSON</div>
+          <div class="card-body">
+            <div class="settings-help" style="margin-bottom:12px">Fallback editor for raw config JSON. This reflects the last saved or loaded config; structured edits above are only merged in after pressing Save Settings.</div>
+            <textarea class="form-textarea" id="settings-json" style="min-height:320px;font-family:'SF Mono','Menlo',monospace;font-size:12px">${escapeHtml(JSON.stringify(config, null, 2))}</textarea>
+            <div class="settings-toolbar" style="margin-top:12px">
+              <button class="btn" onclick="renderSettings($('#page-container'))">Reload Form</button>
+              <button class="btn btn-primary" onclick="saveSettingsJson()">Save JSON</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    bindSettingsToggles();
+  }
+
   window.saveSettings = async function() {
     try {
-      const json = JSON.parse($('#settings-json').value);
-      await PUT('/api/settings', json);
+      const payload = buildStructuredSettingsPayload();
+      const response = await PUT('/api/settings', payload);
+      settingsEditorState = {
+        config: settingsDeepClone(response.config || payload),
+        configPath: settingsEditorState?.configPath || '',
+        runtime: response.runtime || settingsEditorState?.runtime || {},
+      };
       toast('Settings saved (restart runtime for full effect)', 'success');
+      await renderSettings($('#page-container'));
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  window.saveSettingsJson = async function() {
+    try {
+      const json = JSON.parse($('#settings-json').value);
+      const response = await PUT('/api/settings', json);
+      settingsEditorState = {
+        config: settingsDeepClone(response.config || json),
+        configPath: settingsEditorState?.configPath || '',
+        runtime: response.runtime || settingsEditorState?.runtime || {},
+      };
+      toast('JSON settings saved (restart runtime for full effect)', 'success');
+      await renderSettings($('#page-container'));
     } catch (err) { toast(err.message, 'error'); }
   };
 

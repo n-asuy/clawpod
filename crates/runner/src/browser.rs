@@ -131,6 +131,9 @@ async fn launch_browser(config: &BrowserLaunchConfig) -> Result<()> {
     if let Some(display) = &config.display {
         command.env("DISPLAY", display);
     }
+    if let Some(xauthority) = super::resolve_browser_xauthority() {
+        command.env("XAUTHORITY", xauthority);
+    }
     if let Some(home_dir) = &config.home_dir {
         command.env("HOME", home_dir);
         command.env("XDG_CONFIG_HOME", home_dir.join(".config"));

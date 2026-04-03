@@ -181,11 +181,34 @@ fn resolve_browser_home_dir(
         })
 }
 
+pub(crate) fn resolve_browser_xauthority() -> Option<PathBuf> {
+    resolve_browser_xauthority_from(
+        std::env::var_os("XAUTHORITY").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+}
+
+fn resolve_browser_xauthority_from(
+    xauthority_path: Option<PathBuf>,
+    source_home_dir: Option<PathBuf>,
+) -> Option<PathBuf> {
+    xauthority_path
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            source_home_dir
+                .map(|home| home.join(".Xauthority"))
+                .filter(|path| path.is_file())
+        })
+}
+
 fn build_execution_envs(request: &RunRequest) -> Vec<(String, String)> {
     let mut envs = vec![];
     if let Some(display) = request.metadata.get("browser_display") {
         envs.push(("DISPLAY".to_string(), display.clone()));
         envs.push(("AGENT_BROWSER_DISPLAY".to_string(), display.clone()));
+        if let Some(xauthority) = resolve_browser_xauthority() {
+            envs.push(("XAUTHORITY".to_string(), xauthority.display().to_string()));
+        }
     }
     if let Some(profile) = request.metadata.get("browser_profile") {
         envs.push(("AGENT_BROWSER_PROFILE".to_string(), profile.clone()));
@@ -782,7 +805,9 @@ fn parse_handoff(prompt: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::resolve_browser_xauthority_from;
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn parse_codex_agent_message_completed() {
@@ -1047,5 +1072,50 @@ mod tests {
             env_map.get("XDG_CONFIG_HOME").map(String::as_str),
             Some("/tmp/leader-profile/.home/.config")
         );
+    }
+
+    #[test]
+    fn resolve_browser_xauthority_prefers_explicit_path() {
+        let temp_dir = unique_test_dir("xauth-explicit");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let explicit = temp_dir.join("explicit.xauth");
+        let derived = temp_dir.join("home").join(".Xauthority");
+        std::fs::create_dir_all(derived.parent().unwrap()).unwrap();
+        std::fs::write(&explicit, b"cookie").unwrap();
+        std::fs::write(&derived, b"cookie").unwrap();
+
+        assert_eq!(
+            resolve_browser_xauthority_from(Some(explicit.clone()), Some(temp_dir.join("home"))),
+            Some(explicit)
+        );
+
+        std::fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_browser_xauthority_derives_from_home_dir() {
+        let temp_dir = unique_test_dir("xauth-home");
+        let home_dir = temp_dir.join("home");
+        let derived = home_dir.join(".Xauthority");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        std::fs::write(&derived, b"cookie").unwrap();
+
+        assert_eq!(
+            resolve_browser_xauthority_from(None, Some(home_dir)),
+            Some(derived)
+        );
+
+        std::fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "clawpod-runner-{label}-{}-{nanos}",
+            std::process::id()
+        ))
     }
 }
