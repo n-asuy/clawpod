@@ -42,13 +42,13 @@ is_cdp_ready() {
   curl -fsS --max-time 2 "http://localhost:${port}/json/version" >/dev/null 2>&1
 }
 
-PORT_FIXED=""
+PORT_FIXED="${AGENT_BROWSER_CDP_PORT:-}"
 PORT_BASE=9400
 PORT_MAX=9499
-PROFILE_PREFIX="/tmp/nasuy-debug-profile"
-PROFILE_DIR_OVERRIDE=""
-CHROME_BIN="${CHROME_BIN:-$(command -v google-chrome 2>/dev/null || echo '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')}"
-OPEN_URL="about:blank"
+PROFILE_PREFIX="${AGENT_BROWSER_PROFILE_PREFIX:-/tmp/nasuy-debug-profile}"
+PROFILE_DIR_OVERRIDE="${AGENT_BROWSER_PROFILE_DIR:-}"
+CHROME_BIN="${CHROME_BIN:-${AGENT_BROWSER_EXECUTABLE_PATH:-$(command -v google-chrome 2>/dev/null || echo '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')}}"
+OPEN_URL="${AGENT_BROWSER_OPEN_URL:-about:blank}"
 WAIT_MS=12000
 FOREGROUND=0
 NO_REUSE=0
