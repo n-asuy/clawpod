@@ -199,6 +199,19 @@ fn resolve_browser_xauthority_from(
     })
 }
 
+fn resolve_agent_browser_session(
+    metadata: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    metadata
+        .get("browser_profile")
+        .map(|profile| format!("clawpod-{profile}"))
+        .or_else(|| {
+            metadata
+                .get("browser_cdp_port")
+                .map(|port| format!("clawpod-cdp-{port}"))
+        })
+}
+
 fn build_execution_envs(request: &RunRequest) -> Vec<(String, String)> {
     let mut envs = vec![];
     if let Some(display) = request.metadata.get("browser_display") {
@@ -210,6 +223,9 @@ fn build_execution_envs(request: &RunRequest) -> Vec<(String, String)> {
     }
     if let Some(profile) = request.metadata.get("browser_profile") {
         envs.push(("AGENT_BROWSER_PROFILE".to_string(), profile.clone()));
+    }
+    if let Some(session_name) = resolve_agent_browser_session(&request.metadata) {
+        envs.push(("AGENT_BROWSER_SESSION".to_string(), session_name));
     }
     if let Some(cdp_port) = request.metadata.get("browser_cdp_port") {
         envs.push(("AGENT_BROWSER_CDP_PORT".to_string(), cdp_port.clone()));
@@ -226,6 +242,35 @@ fn build_execution_envs(request: &RunRequest) -> Vec<(String, String)> {
     if let Some(home_dir) = resolve_browser_home_dir(&request.metadata) {
         let home_dir = home_dir.display().to_string();
         envs.push(("AGENT_BROWSER_HOME_DIR".to_string(), home_dir.clone()));
+        envs.push(("HOME".to_string(), home_dir.clone()));
+        envs.push((
+            "XDG_CONFIG_HOME".to_string(),
+            PathBuf::from(&home_dir)
+                .join(".config")
+                .display()
+                .to_string(),
+        ));
+        envs.push((
+            "XDG_CACHE_HOME".to_string(),
+            PathBuf::from(&home_dir)
+                .join(".cache")
+                .display()
+                .to_string(),
+        ));
+        envs.push((
+            "XDG_STATE_HOME".to_string(),
+            PathBuf::from(&home_dir)
+                .join(".local/state")
+                .display()
+                .to_string(),
+        ));
+        envs.push((
+            "XDG_DATA_HOME".to_string(),
+            PathBuf::from(&home_dir)
+                .join(".local/share")
+                .display()
+                .to_string(),
+        ));
     }
     envs
 }
@@ -961,6 +1006,10 @@ mod tests {
             Some("reviewer")
         );
         assert_eq!(
+            env_map.get("AGENT_BROWSER_SESSION").map(String::as_str),
+            Some("clawpod-reviewer")
+        );
+        assert_eq!(
             env_map.get("AGENT_BROWSER_CDP_PORT").map(String::as_str),
             Some("9411")
         );
@@ -980,11 +1029,26 @@ mod tests {
             env_map.get("AGENT_BROWSER_HOME_DIR").map(String::as_str),
             Some("/srv/clawpod/reviewer-home")
         );
-        assert!(!env_map.contains_key("HOME"));
-        assert!(!env_map.contains_key("XDG_CONFIG_HOME"));
-        assert!(!env_map.contains_key("XDG_CACHE_HOME"));
-        assert!(!env_map.contains_key("XDG_STATE_HOME"));
-        assert!(!env_map.contains_key("XDG_DATA_HOME"));
+        assert_eq!(
+            env_map.get("HOME").map(String::as_str),
+            Some("/srv/clawpod/reviewer-home")
+        );
+        assert_eq!(
+            env_map.get("XDG_CONFIG_HOME").map(String::as_str),
+            Some("/srv/clawpod/reviewer-home/.config")
+        );
+        assert_eq!(
+            env_map.get("XDG_CACHE_HOME").map(String::as_str),
+            Some("/srv/clawpod/reviewer-home/.cache")
+        );
+        assert_eq!(
+            env_map.get("XDG_STATE_HOME").map(String::as_str),
+            Some("/srv/clawpod/reviewer-home/.local/state")
+        );
+        assert_eq!(
+            env_map.get("XDG_DATA_HOME").map(String::as_str),
+            Some("/srv/clawpod/reviewer-home/.local/share")
+        );
     }
 
     #[test]
@@ -1015,11 +1079,48 @@ mod tests {
         let envs = build_execution_envs(&request);
         let env_map: std::collections::HashMap<_, _> = envs.into_iter().collect();
         assert_eq!(
+            env_map.get("AGENT_BROWSER_SESSION").map(String::as_str),
+            Some("clawpod-leader")
+        );
+        assert_eq!(
             env_map.get("AGENT_BROWSER_HOME_DIR").map(String::as_str),
             Some("/tmp/leader-profile/.home")
         );
-        assert!(!env_map.contains_key("HOME"));
-        assert!(!env_map.contains_key("XDG_CONFIG_HOME"));
+        assert_eq!(
+            env_map.get("HOME").map(String::as_str),
+            Some("/tmp/leader-profile/.home")
+        );
+        assert_eq!(
+            env_map.get("XDG_CONFIG_HOME").map(String::as_str),
+            Some("/tmp/leader-profile/.home/.config")
+        );
+    }
+
+    #[test]
+    fn build_execution_envs_uses_cdp_port_for_agent_browser_session_without_profile() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("browser_cdp_port".to_string(), "9425".to_string());
+
+        let request = RunRequest {
+            run_id: "00000000-0000-0000-0000-000000000021".parse().unwrap(),
+            task_id: "00000000-0000-0000-0000-000000000022".parse().unwrap(),
+            session_key: "session".to_string(),
+            agent_id: "agent".to_string(),
+            provider: ProviderKind::Mock,
+            model: "mock".to_string(),
+            think_level: domain::ThinkLevel::Low,
+            working_directory: ".".to_string(),
+            prompt: "hello".to_string(),
+            continue_session: false,
+            metadata,
+        };
+
+        let envs = build_execution_envs(&request);
+        let env_map: std::collections::HashMap<_, _> = envs.into_iter().collect();
+        assert_eq!(
+            env_map.get("AGENT_BROWSER_SESSION").map(String::as_str),
+            Some("clawpod-cdp-9425")
+        );
     }
 
     #[test]
