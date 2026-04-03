@@ -32,6 +32,25 @@ require_cmd() {
   fi
 }
 
+process_cmdline() {
+  local pid="$1"
+  if [[ -r "/proc/${pid}/cmdline" ]]; then
+    tr '\0' '\n' < "/proc/${pid}/cmdline"
+    return 0
+  fi
+  ps -p "$pid" -o command= 2>/dev/null
+}
+
+process_env_var() {
+  local pid="$1"
+  local key="$2"
+  if [[ -r "/proc/${pid}/environ" ]]; then
+    tr '\0' '\n' < "/proc/${pid}/environ" | grep -m1 "^${key}=" | sed "s/^${key}=//"
+    return 0
+  fi
+  return 1
+}
+
 is_listening() {
   local port="$1"
   lsof -n -P -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
@@ -49,6 +68,7 @@ PROFILE_PREFIX="${AGENT_BROWSER_PROFILE_PREFIX:-/tmp/nasuy-debug-profile}"
 PROFILE_DIR_OVERRIDE="${AGENT_BROWSER_PROFILE_DIR:-}"
 CHROME_BIN="${CHROME_BIN:-${AGENT_BROWSER_EXECUTABLE_PATH:-$(command -v google-chrome 2>/dev/null || echo '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')}}"
 OPEN_URL="${AGENT_BROWSER_OPEN_URL:-about:blank}"
+EXPECTED_DISPLAY="${AGENT_BROWSER_DISPLAY:-${DISPLAY:-}}"
 WAIT_MS=12000
 FOREGROUND=0
 NO_REUSE=0
@@ -151,17 +171,67 @@ fi
 
 # --- Phase 1: Detect existing CDP Chrome ---
 REUSED_PORT=""
+REUSED_PID=""
+REUSED_PROFILE=""
+REUSED_DISPLAY=""
 if [[ "$NO_REUSE" == "0" ]]; then
   if [[ -n "$PORT_FIXED" ]]; then
     # Check the specific port
     if is_cdp_ready "$PORT_FIXED"; then
+      CANDIDATE_PID=$(lsof -n -P -iTCP:"$PORT_FIXED" -sTCP:LISTEN -t 2>/dev/null | head -1) || true
+      CANDIDATE_PROFILE="$PROFILE_DIR_OVERRIDE"
+      CANDIDATE_DISPLAY="$EXPECTED_DISPLAY"
+      if [[ -n "$CANDIDATE_PID" ]]; then
+        if [[ -n "$CANDIDATE_PROFILE" ]]; then
+          if ! process_cmdline "$CANDIDATE_PID" | grep -Fx -- "--user-data-dir=${CANDIDATE_PROFILE}" >/dev/null 2>&1; then
+            echo "CDP port $PORT_FIXED is already attached to a different Chrome profile." >&2
+            echo "Expected --user-data-dir=${CANDIDATE_PROFILE} for reuse." >&2
+            exit 1
+          fi
+        fi
+        if [[ -n "$CANDIDATE_DISPLAY" ]]; then
+          ACTUAL_DISPLAY=$(process_env_var "$CANDIDATE_PID" DISPLAY 2>/dev/null || true)
+          if [[ -n "$ACTUAL_DISPLAY" && "$ACTUAL_DISPLAY" != "$CANDIDATE_DISPLAY" ]]; then
+            echo "CDP port $PORT_FIXED is already attached to a different DISPLAY." >&2
+            echo "Expected DISPLAY=${CANDIDATE_DISPLAY}, got DISPLAY=${ACTUAL_DISPLAY}." >&2
+            exit 1
+          fi
+        fi
+      fi
       REUSED_PORT="$PORT_FIXED"
+      REUSED_PID="$CANDIDATE_PID"
+      REUSED_PROFILE="$CANDIDATE_PROFILE"
+      REUSED_DISPLAY="$CANDIDATE_DISPLAY"
     fi
   else
     # Scan the range for an existing CDP instance
     for ((port=PORT_BASE; port<=PORT_MAX; port++)); do
       if is_cdp_ready "$port"; then
+        CANDIDATE_PID=$(lsof -n -P -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1) || true
+        CANDIDATE_PROFILE=""
+        CANDIDATE_DISPLAY="$EXPECTED_DISPLAY"
+        if [[ -n "$PROFILE_DIR_OVERRIDE" ]]; then
+          CANDIDATE_PROFILE="$PROFILE_DIR_OVERRIDE"
+        elif [[ -n "$PROFILE_PREFIX" ]]; then
+          CANDIDATE_PROFILE="${PROFILE_PREFIX}-${port}"
+        fi
+        if [[ -n "$CANDIDATE_PID" ]]; then
+          if [[ -n "$CANDIDATE_PROFILE" ]]; then
+            if ! process_cmdline "$CANDIDATE_PID" | grep -Fx -- "--user-data-dir=${CANDIDATE_PROFILE}" >/dev/null 2>&1; then
+              continue
+            fi
+          fi
+          if [[ -n "$CANDIDATE_DISPLAY" ]]; then
+            ACTUAL_DISPLAY=$(process_env_var "$CANDIDATE_PID" DISPLAY 2>/dev/null || true)
+            if [[ -n "$ACTUAL_DISPLAY" && "$ACTUAL_DISPLAY" != "$CANDIDATE_DISPLAY" ]]; then
+              continue
+            fi
+          fi
+        fi
         REUSED_PORT="$port"
+        REUSED_PID="$CANDIDATE_PID"
+        REUSED_PROFILE="$CANDIDATE_PROFILE"
+        REUSED_DISPLAY="$CANDIDATE_DISPLAY"
         break
       fi
     done
@@ -170,13 +240,12 @@ fi
 
 # --- Phase 1b: Reuse existing Chrome ---
 if [[ -n "$REUSED_PORT" ]]; then
-  REUSED_PID=""
-  REUSED_PID=$(lsof -n -P -iTCP:"$REUSED_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1) || true
-
-  if [[ -n "$PROFILE_DIR_OVERRIDE" ]]; then
-    REUSED_PROFILE="$PROFILE_DIR_OVERRIDE"
-  else
-    REUSED_PROFILE="${PROFILE_PREFIX}-${REUSED_PORT}"
+  if [[ -z "$REUSED_PROFILE" ]]; then
+    if [[ -n "$PROFILE_DIR_OVERRIDE" ]]; then
+      REUSED_PROFILE="$PROFILE_DIR_OVERRIDE"
+    else
+      REUSED_PROFILE="${PROFILE_PREFIX}-${REUSED_PORT}"
+    fi
   fi
 
   echo "cdp_port=$REUSED_PORT"
