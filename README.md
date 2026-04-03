@@ -121,6 +121,8 @@ provider = "openai"
 model = "gpt-5"
 
 # Teams
+default_team = "dev"
+
 [teams.dev]
 name = "Development"
 leader_agent = "default"

@@ -433,6 +433,7 @@ async fn create_agent(
 ) -> ApiResult<Json<Value>> {
     let agent_id = normalize_identifier(&payload.id, "agent id").map_err(internal_error)?;
     validate_agent_config(&payload.agent).map_err(internal_error)?;
+    let mut assigned_team_id = None;
     let next = mutate_config(&state, |config| {
         if config.agents.contains_key(&agent_id) {
             bail!("agent already exists: {agent_id}");
@@ -440,6 +441,7 @@ async fn create_agent(
         config
             .agents
             .insert(agent_id.clone(), payload.agent.clone());
+        assigned_team_id = config.add_agent_to_default_team(&agent_id)?;
         Ok(())
     })
     .await?;
@@ -458,10 +460,26 @@ async fn create_agent(
     }
     drop(config);
 
-    emit_server_event(&state, "agent_created", json!({ "agent_id": agent_id }));
+    if let Some(team_id) = assigned_team_id.as_deref() {
+        if let Some(team) = next.teams.get(team_id) {
+            let agent_ids: Vec<&str> = team.agents.iter().map(String::as_str).collect();
+            reset_sessions_for_agents(&state, &next, &agent_ids);
+        }
+    }
+
+    emit_server_event(
+        &state,
+        "agent_created",
+        json!({
+            "agent_id": agent_id,
+            "assigned_team_id": assigned_team_id.clone(),
+        }),
+    );
     Ok(Json(json!({
         "ok": true,
         "agents": next.agents,
+        "teams": next.teams,
+        "assigned_team_id": assigned_team_id,
     })))
 }
 

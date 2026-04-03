@@ -24,6 +24,7 @@ ClawPod の設定は TOML で管理します。既定パスは `~/.clawpod/clawp
 | `[browser]` | browser profile 定義 |
 | `[heartbeat]` | heartbeat ループ全体の有効化と間隔 |
 | `[agent_defaults]` | agent 共通の既定値 |
+| `default_team` | 新規作成 agent の自動所属先 team ID |
 | `[agents.<id>]` | agent 定義 |
 | `[custom_providers.<id>]` | custom provider 定義 |
 | `[teams.<id>]` | team 定義 |
@@ -235,6 +236,14 @@ profile = "reviewer"
 | `model` | 既定モデル |
 
 `api_key` か `api_key_env` のどちらかは実質必須です。
+
+## `default_team`
+
+```toml
+default_team = "dev"
+```
+
+Office API / CLI で新しい agent を作成したとき、自動で追加する team ID です。未設定なら自動所属は行いません。
 
 ## `[teams.<id>]`
 

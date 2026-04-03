@@ -588,6 +588,7 @@ fn agent_add(
 
     let mut updated = config.clone();
     updated.agents.insert(id.clone(), agent_config.clone());
+    let assigned_team_id = updated.add_agent_to_default_team(&id)?;
     config::write_config(config_path, &updated)?;
 
     let agent_root = updated.resolve_agent_workdir(&id);
@@ -601,11 +602,25 @@ fn agent_add(
         eprintln!("warning: failed to bootstrap workspace: {e:#}");
     }
 
-    println!(
-        "agent '{id}' created ({}/{})",
-        provider_label(&agent_config.provider),
-        agent_config.model
-    );
+    if let Some(team_id) = assigned_team_id.as_deref() {
+        if let Some(team) = updated.teams.get(team_id) {
+            let agent_ids: Vec<&str> = team.agents.iter().map(String::as_str).collect();
+            reset_agents(&updated, &agent_ids)?;
+        }
+    }
+
+    match assigned_team_id {
+        Some(team_id) => println!(
+            "agent '{id}' created ({}/{}) and added to team '{team_id}'",
+            provider_label(&agent_config.provider),
+            agent_config.model
+        ),
+        None => println!(
+            "agent '{id}' created ({}/{})",
+            provider_label(&agent_config.provider),
+            agent_config.model
+        ),
+    }
     Ok(())
 }
 
@@ -687,11 +702,19 @@ fn reset(config: &RuntimeConfig, agent_id: &str) -> Result<()> {
     if !config.agents.contains_key(agent_id) {
         bail!("agent not found: {agent_id}");
     }
+    reset_agents(config, &[agent_id])?;
     let workdir = config.resolve_agent_workdir(agent_id);
-    reset_agent_workspace(&workdir)?;
-    let store = StateStore::new(config.state_path())?;
-    store.clear_agent_sessions(agent_id)?;
     info!(agent = %agent_id, workdir = %workdir.display(), "agent reset completed");
+    Ok(())
+}
+
+fn reset_agents(config: &RuntimeConfig, agent_ids: &[&str]) -> Result<()> {
+    let store = StateStore::new(config.state_path())?;
+    for &agent_id in agent_ids {
+        let workdir = config.resolve_agent_workdir(agent_id);
+        reset_agent_workspace(&workdir)?;
+        store.clear_agent_sessions(agent_id)?;
+    }
     Ok(())
 }
 

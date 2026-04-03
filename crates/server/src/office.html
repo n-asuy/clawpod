@@ -1146,9 +1146,10 @@ tr.clickable-row:hover td { background: var(--bg-hover); }
       const thinkLevel = $('#m-agent-think-level').value;
       if (thinkLevel) agent.think_level = thinkLevel;
       applyAgentBrowserProfile(agent);
-      await POST('/api/agents', { id: $('#m-agent-id').value, agent });
+      const data = await POST('/api/agents', { id: $('#m-agent-id').value, agent });
       closeModal();
-      toast('Agent created — restart runtime for full effect', 'success');
+      const assignedTeam = data?.assigned_team_id ? ` and added to team ${data.assigned_team_id}` : '';
+      toast(`Agent created${assignedTeam} - restart runtime for full effect`, 'success');
       navigate('agents');
     } catch (err) { toast(err.message, 'error'); }
   };

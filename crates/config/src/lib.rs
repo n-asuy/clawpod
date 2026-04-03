@@ -549,6 +549,8 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub custom_providers: HashMap<String, CustomProviderConfig>,
     #[serde(default)]
+    pub default_team: Option<String>,
+    #[serde(default)]
     pub teams: HashMap<String, TeamConfig>,
     #[serde(default)]
     pub bindings: Vec<BindingRule>,
@@ -588,6 +590,7 @@ impl Default for RuntimeConfig {
             agent_defaults: None,
             agents,
             custom_providers: HashMap::new(),
+            default_team: None,
             teams: HashMap::new(),
             bindings: vec![],
             channels: ChannelsConfig::default(),
@@ -617,6 +620,12 @@ impl RuntimeConfig {
         for (provider_id, _provider) in &self.custom_providers {
             if self.custom_provider_api_key(provider_id)?.is_none() {
                 bail!("custom_providers.{provider_id} requires api_key or api_key_env");
+            }
+        }
+
+        if let Some(team_id) = self.default_team.as_deref() {
+            if !self.teams.contains_key(team_id) {
+                bail!("default_team must reference an existing team: {team_id}");
             }
         }
 
@@ -831,6 +840,20 @@ impl RuntimeConfig {
             provider.api_key_env.as_ref(),
             &format!("custom_providers.{provider_id}.api_key"),
         )
+    }
+
+    pub fn add_agent_to_default_team(&mut self, agent_id: &str) -> Result<Option<String>> {
+        let Some(team_id) = self.default_team.clone() else {
+            return Ok(None);
+        };
+        let team = self
+            .teams
+            .get_mut(&team_id)
+            .with_context(|| format!("default_team references unknown team: {team_id}"))?;
+        if !team.agents.iter().any(|member_id| member_id == agent_id) {
+            team.agents.push(agent_id.to_string());
+        }
+        Ok(Some(team_id))
     }
 
     pub fn masked_for_display(&self) -> Self {
@@ -1888,6 +1911,67 @@ isolated_session = false
         assert_eq!(hb.prompt.as_deref(), Some("Check status"));
         assert_eq!(hb.direct_policy, Some(domain::HeartbeatDirectPolicy::Block));
         assert_eq!(hb.light_context, Some(true));
+    }
+
+    #[test]
+    fn config_with_default_team_parses_and_validates() {
+        let toml = r#"
+default_team = "dev"
+
+[agents.default]
+name = "Default"
+model = "claude-sonnet-4-6"
+
+[teams.dev]
+name = "Development"
+leader_agent = "default"
+agents = ["default"]
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.default_team.as_deref(), Some("dev"));
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn config_validation_rejects_unknown_default_team() {
+        let toml = r#"
+default_team = "missing"
+
+[agents.default]
+name = "Default"
+model = "claude-sonnet-4-6"
+"#;
+        let config: RuntimeConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("default_team"));
+        assert!(err.contains("missing"));
+    }
+
+    #[test]
+    fn add_agent_to_default_team_appends_member() {
+        let toml = r#"
+default_team = "dev"
+
+[agents.default]
+name = "Default"
+model = "claude-sonnet-4-6"
+
+[agents.reviewer]
+name = "Reviewer"
+model = "claude-sonnet-4-6"
+
+[teams.dev]
+name = "Development"
+leader_agent = "default"
+agents = ["default"]
+"#;
+        let mut config: RuntimeConfig = toml::from_str(toml).unwrap();
+        let assigned_team = config.add_agent_to_default_team("reviewer").unwrap();
+        assert_eq!(assigned_team.as_deref(), Some("dev"));
+        assert_eq!(
+            config.teams.get("dev").unwrap().agents,
+            vec!["default".to_string(), "reviewer".to_string()]
+        );
     }
 
     #[test]
