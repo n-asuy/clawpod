@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use axum::body::Body;
 use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocketUpgrade};
 use axum::extract::{OriginalUri, Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::{header, HeaderMap, Request, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse, Json, Redirect, Response};
 use axum::routing::{get, post, put};
@@ -191,6 +191,7 @@ pub async fn run(
             get(get_agent).put(update_agent).delete(delete_agent),
         )
         .route("/view/*rest", get(open_browser_view))
+        .route("/websockify", get(open_browser_root_websocket))
         .route(
             "/api/agents/:agent_id/sessions/clear",
             post(clear_agent_sessions_api),
@@ -412,8 +413,11 @@ async fn open_browser_view(
     if let Some(ws) = ws {
         let target_url =
             browser_backend_ws_url(route.kasm_port, &route.backend_path, original_uri.query());
+        let forwarded_headers = filtered_browser_ws_headers(&headers);
         return Ok(ws
-            .on_upgrade(move |socket| proxy_browser_websocket(socket, target_url))
+            .on_upgrade(move |socket| {
+                proxy_browser_websocket(socket, target_url, forwarded_headers)
+            })
             .into_response());
     }
 
@@ -425,6 +429,43 @@ async fn open_browser_view(
         original_uri.query(),
     )
     .await
+}
+
+async fn open_browser_root_websocket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    original_uri: OriginalUri,
+    ws: Option<WebSocketUpgrade>,
+) -> ApiResult<Response> {
+    let Some(ws) = ws else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!(
+                "browser viewer websocket path not found: {}",
+                original_uri.path()
+            ),
+        ));
+    };
+
+    let config = state.config.read().await;
+    let profiles = config.resolved_browser_profiles().map_err(internal_error)?;
+    let Some(route) = resolve_browser_view_route_from_referer(&profiles, &headers) else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!(
+                "browser viewer websocket referer not found for path: {}",
+                original_uri.path()
+            ),
+        ));
+    };
+    drop(config);
+
+    let target_url =
+        browser_backend_ws_url(route.kasm_port, original_uri.path(), original_uri.query());
+    let forwarded_headers = filtered_browser_ws_headers(&headers);
+    Ok(ws
+        .on_upgrade(move |socket| proxy_browser_websocket(socket, target_url, forwarded_headers))
+        .into_response())
 }
 
 async fn create_agent(
@@ -1555,8 +1596,25 @@ async fn proxy_browser_http(
 async fn proxy_browser_websocket(
     mut client_socket: axum::extract::ws::WebSocket,
     target_url: String,
+    headers: HeaderMap,
 ) {
-    let backend = connect_async(&target_url).await;
+    let mut request = match Request::builder().method("GET").uri(&target_url).body(()) {
+        Ok(request) => request,
+        Err(err) => {
+            let _ = client_socket
+                .send(WsMessage::Close(Some(CloseFrame {
+                    code: axum::extract::ws::close_code::ERROR,
+                    reason: format!("failed to build browser viewer backend request: {err}").into(),
+                })))
+                .await;
+            return;
+        }
+    };
+    for (name, value) in &headers {
+        request.headers_mut().append(name, value.clone());
+    }
+
+    let backend = connect_async(request).await;
     let (backend_socket, _) = match backend {
         Ok(value) => value,
         Err(err) => {
@@ -1611,6 +1669,15 @@ async fn proxy_browser_websocket(
     }
 }
 
+fn resolve_browser_view_route_from_referer(
+    profiles: &[config::ResolvedBrowserProfile],
+    headers: &HeaderMap,
+) -> Option<BrowserViewRoute> {
+    let referer = headers.get(header::REFERER)?.to_str().ok()?;
+    let uri: Uri = referer.parse().ok()?;
+    resolve_browser_view_route(profiles, uri.path())
+}
+
 fn to_backend_ws_message(message: WsMessage) -> Option<TungsteniteMessage> {
     match message {
         WsMessage::Text(text) => Some(TungsteniteMessage::Text(text.into())),
@@ -1645,6 +1712,34 @@ fn should_forward_request_header(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
     )
+}
+
+fn should_forward_ws_request_header(name: &str) -> bool {
+    !matches!(
+        name.to_ascii_lowercase().as_str(),
+        "connection"
+            | "host"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "sec-websocket-extensions"
+            | "sec-websocket-key"
+            | "sec-websocket-version"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
+}
+
+fn filtered_browser_ws_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut forwarded = HeaderMap::new();
+    for (name, value) in headers {
+        if should_forward_ws_request_header(name.as_str()) {
+            forwarded.append(name, value.clone());
+        }
+    }
+    forwarded
 }
 
 fn should_copy_response_header(name: &str) -> bool {
@@ -1798,10 +1893,10 @@ const OFFICE_HTML: &str = include_str!("office.html");
 #[cfg(test)]
 mod tests {
     use super::{
-        append_trailing_slash, browser_backend_http_url, normalize_view_path,
-        resolve_browser_view_route,
+        append_trailing_slash, browser_backend_http_url, filtered_browser_ws_headers,
+        normalize_view_path, resolve_browser_view_route, resolve_browser_view_route_from_referer,
     };
-    use axum::http::Uri;
+    use axum::http::{header, HeaderMap, HeaderValue, Uri};
     use config::ResolvedBrowserProfile;
     use std::path::PathBuf;
 
@@ -1863,5 +1958,54 @@ mod tests {
             browser_backend_http_url(8442, "/websockify", Some("token=abc")),
             "http://127.0.0.1:8442/websockify?token=abc"
         );
+    }
+
+    #[test]
+    fn resolve_browser_view_route_from_referer_uses_profile_path() {
+        let profiles = vec![ResolvedBrowserProfile {
+            name: "leader".to_string(),
+            cdp_port: 9410,
+            profile_dir: PathBuf::from("/tmp/leader"),
+            display: ":11".to_string(),
+            kasm_port: 8441,
+            view_path: "/view/leader".to_string(),
+            os_user: None,
+            home_dir: None,
+            driver: None,
+        }];
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::REFERER,
+            HeaderValue::from_static("https://clawpod.taila1d3cf.ts.net:3777/view/leader/"),
+        );
+
+        let route = resolve_browser_view_route_from_referer(&profiles, &headers).unwrap();
+        assert_eq!(route.profile_name, "leader");
+        assert_eq!(route.kasm_port, 8441);
+        assert_eq!(route.backend_path, "/");
+    }
+
+    #[test]
+    fn filtered_browser_ws_headers_preserves_origin_and_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://example.com"),
+        );
+        headers.insert(header::COOKIE, HeaderValue::from_static("session=abc"));
+        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
+        headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+
+        let filtered = filtered_browser_ws_headers(&headers);
+        assert_eq!(
+            filtered.get(header::ORIGIN),
+            Some(&HeaderValue::from_static("https://example.com"))
+        );
+        assert_eq!(
+            filtered.get(header::COOKIE),
+            Some(&HeaderValue::from_static("session=abc"))
+        );
+        assert!(filtered.get(header::HOST).is_none());
+        assert!(filtered.get(header::UPGRADE).is_none());
     }
 }
